@@ -29,15 +29,10 @@ Session Relay 是一个 macOS 小工具，帮你把 **Claude Code** 会话和 **
 
 ## 工作方式
 
-```mermaid
-flowchart LR
-    C["<b>Claude Code</b><br/>审查并更新任务文档"] -- "send_to_codex" --> X["<b>Codex</b><br/>执行指令"]
-    X -- "回执" --> C
-    classDef claude fill:#D97757,stroke:#D97757,color:#FFFFFF
-    classDef codex fill:#F7F7F5,stroke:#2A2A2C,color:#111111
-    class C claude
-    class X codex
-```
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/art/flow-dark-zh.png">
+  <img alt="接力循环：Claude Code 审查并调用 send_to_codex，Codex 执行指令，回执交回 Claude" src="docs/art/flow-light-zh.png">
+</picture>
 
 每一轮分三步：
 

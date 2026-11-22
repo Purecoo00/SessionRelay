@@ -29,15 +29,10 @@ Session Relay is a small macOS app that closes the loop between a **Claude Code*
 
 ## How it works
 
-```mermaid
-flowchart LR
-    C["<b>Claude Code</b><br/>reviews, updates the task document"] -- "send_to_codex" --> X["<b>Codex</b><br/>runs the prompt"]
-    X -- "receipt" --> C
-    classDef claude fill:#D97757,stroke:#D97757,color:#FFFFFF
-    classDef codex fill:#F7F7F5,stroke:#2A2A2C,color:#111111
-    class C claude
-    class X codex
-```
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/art/flow-dark.png">
+  <img alt="The relay loop: Claude Code reviews and calls send_to_codex, Codex runs the instruction, the receipt returns to Claude" src="docs/art/flow-light.png">
+</picture>
 
 Each round has three steps:
 
@@ -150,6 +145,7 @@ SESSION_RELAY_DEMO=1 SESSION_RELAY_SNAPSHOT=/path/to/shots \
 | `i18n.py` | Chinese and English messages |
 | `en.lproj`, `zh-Hans.lproj` | UI translations |
 | `icon/make_icon.swift` | Draws the app icon |
+| `docs/art/*.swift` | Draws the banner, social preview and loop diagram |
 
 ## License
 
