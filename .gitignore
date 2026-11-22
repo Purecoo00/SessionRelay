@@ -1,0 +1,13 @@
+# Python caches
+__pycache__/
+*.pyc
+
+# Build output
+*.app
+icon/*.iconset/
+
+# macOS
+.DS_Store
+
+# Relay records, if you run the app inside this folder
+.session-relay/
