@@ -165,6 +165,37 @@ enum Demo {
         guard let view = window.contentView?.superview ?? window.contentView,
               let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return }
         view.cacheDisplay(in: view.bounds, to: rep)
-        try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
+        try? framed(rep)?.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
+    }
+
+    /// The window with rounded corners and a soft shadow on a transparent canvas, like a product shot.
+    static func framed(_ shot: NSBitmapImageRep) -> NSBitmapImageRep? {
+        let scale = CGFloat(shot.pixelsWide) / shot.size.width
+        let margin: CGFloat = 48, radius: CGFloat = 14
+        let size = NSSize(width: shot.size.width + margin * 2, height: shot.size.height + margin * 2)
+        guard let out = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(size.width * scale), pixelsHigh: Int(size.height * scale),
+                                         bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                                         colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0) else { return nil }
+        out.size = size
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: out)
+        let window = NSRect(x: margin, y: margin + 6, width: shot.size.width, height: shot.size.height)
+        let shape = NSBezierPath(roundedRect: window, xRadius: radius, yRadius: radius)
+        let shadow = NSShadow()
+        shadow.shadowColor = NSColor.black.withAlphaComponent(0.28)
+        shadow.shadowOffset = NSSize(width: 0, height: -10)
+        shadow.shadowBlurRadius = 28
+        NSGraphicsContext.saveGraphicsState()
+        shadow.set()
+        NSColor.black.setFill()
+        shape.fill()
+        NSGraphicsContext.restoreGraphicsState()
+        shape.addClip()
+        shot.draw(in: window)
+        NSColor.black.withAlphaComponent(0.12).setStroke()
+        shape.lineWidth = 1
+        shape.stroke()
+        NSGraphicsContext.restoreGraphicsState()
+        return out
     }
 }

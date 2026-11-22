@@ -497,9 +497,10 @@ struct Workspace: View {
                     }
                 }
             }
-            .onChange(of: ctl.chat.count) { _, _ in proxy.scrollTo("bottom", anchor: .bottom) }
+            // Demo screenshots start at the top: a window snapshot cannot show the toolbar's blur.
+            .onChange(of: ctl.chat.count) { _, _ in if !demoMode { proxy.scrollTo("bottom", anchor: .bottom) } }
             .onChange(of: ctl.liveText) { _, _ in proxy.scrollTo("bottom", anchor: .bottom) }
-            .onAppear { proxy.scrollTo("bottom", anchor: .bottom) }
+            .onAppear { if !demoMode { proxy.scrollTo("bottom", anchor: .bottom) } }
         }
     }
 

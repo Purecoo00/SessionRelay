@@ -1,14 +1,43 @@
-# Session Relay
+<p align="center"><img src="docs/art/banner.png" alt="Session Relay：Claude 审查，Codex 执行，循环自动运转" width="100%"></p>
 
-[English](README.md)
+<p align="center">
+  <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-D97757"></a>
+  <img alt="macOS 14+" src="https://img.shields.io/badge/macOS-14%2B-111111?logo=apple&logoColor=white">
+  <img alt="SwiftUI" src="https://img.shields.io/badge/SwiftUI-F05138?logo=swift&logoColor=white">
+  <img alt="Python 3" src="https://img.shields.io/badge/Python-3-3776AB?logo=python&logoColor=white">
+  <img alt="MCP" src="https://img.shields.io/badge/MCP-tools-444444">
+</p>
+
+<p align="center"><a href="README.md">English</a> · <b>中文</b></p>
 
 Session Relay 是一个 macOS 小工具，帮你把 **Claude Code** 会话和 **Codex** 会话之间的工作闭环跑起来。Claude 审查进展并写出下一条指令，Codex 执行，回执再交回 Claude 审查。你不用再在两个窗口之间手动复制 prompt 和输出。
 
 > **非官方项目。** Session Relay 是独立的社区项目，与 Anthropic 和 OpenAI 没有任何关联，也未获得它们的认可或支持。Claude 和 Claude Code 是 Anthropic 的商标，Codex 是 OpenAI 的商标。
 
-![对话页](docs/screenshots/chat-light-zh.png)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/chat-dark-zh.png">
+  <img alt="Session Relay 以对话形式展示接力：Claude 的审查、发给 Codex 的指令、Codex 的回执" src="docs/screenshots/chat-light-zh.png">
+</picture>
+
+## 亮点
+
+- **始终在一个对话里。** 原会话接力让每一次审查都留在你平时用的 Claude 桌面窗口里，会话不会分叉，也不会藏在别的进程里。
+- **闭环自动运转。** Claude 用 MCP 工具派单，后台进程驱动 Codex 执行，回执回来时自动唤醒 Claude 做下一轮审查。
+- **默认就有保护。** 有轮数上限和暂停开关，而且上一份回执收取之前不会派出下一条指令。
+- **全程有记录。** 每一轮的指令、完整回执、审查和结论都保存在你的项目里。
+- **原生 Mac App。** SwiftUI 编写，支持浅色和深色模式，中英文界面。
 
 ## 工作方式
+
+```mermaid
+flowchart LR
+    C["<b>Claude Code</b><br/>审查并更新任务文档"] -- "send_to_codex" --> X["<b>Codex</b><br/>执行指令"]
+    X -- "回执" --> C
+    classDef claude fill:#D97757,stroke:#D97757,color:#FFFFFF
+    classDef codex fill:#F7F7F5,stroke:#2A2A2C,color:#111111
+    class C claude
+    class X codex
+```
 
 每一轮分三步：
 

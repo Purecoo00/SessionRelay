@@ -1,14 +1,43 @@
-# Session Relay
+<p align="center"><img src="docs/art/banner.png" alt="Session Relay: Claude reviews, Codex builds, the loop runs itself" width="100%"></p>
 
-[中文](README.zh-CN.md)
+<p align="center">
+  <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-D97757"></a>
+  <img alt="macOS 14+" src="https://img.shields.io/badge/macOS-14%2B-111111?logo=apple&logoColor=white">
+  <img alt="SwiftUI" src="https://img.shields.io/badge/SwiftUI-F05138?logo=swift&logoColor=white">
+  <img alt="Python 3" src="https://img.shields.io/badge/Python-3-3776AB?logo=python&logoColor=white">
+  <img alt="MCP" src="https://img.shields.io/badge/MCP-tools-444444">
+</p>
+
+<p align="center"><b>English</b> · <a href="README.zh-CN.md">中文</a></p>
 
 Session Relay is a small macOS app that closes the loop between a **Claude Code** session and a **Codex** chat. Claude reviews the work and writes the next instruction. Codex carries it out. The receipt goes back to Claude for the next review. You no longer copy prompts and outputs between the two windows by hand.
 
 > **Unofficial.** Session Relay is an independent community project. It is not affiliated with, endorsed by or supported by Anthropic or OpenAI. Claude and Claude Code are trademarks of Anthropic; Codex is a trademark of OpenAI.
 
-![Conversation view](docs/screenshots/chat-light.png)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/chat-dark.png">
+  <img alt="Session Relay showing a relay as a conversation: Claude's review, the prompt for Codex, Codex's receipt" src="docs/screenshots/chat-light.png">
+</picture>
+
+## Highlights
+
+- **One conversation.** In-session relay keeps every review in the Claude desktop window you already use. Nothing forks and nothing hides in another process.
+- **Hands-off loop.** Claude dispatches with an MCP tool, a background worker drives Codex, and the receipt wakes Claude for the next review.
+- **Safe by default.** A round limit, a pause switch, and a rule that each receipt is collected before the next prompt goes out.
+- **Everything on record.** Prompts, full receipts, reviews and decisions for every round are saved in your project.
+- **Native Mac app.** SwiftUI, light and dark mode, Chinese and English.
 
 ## How it works
+
+```mermaid
+flowchart LR
+    C["<b>Claude Code</b><br/>reviews, updates the task document"] -- "send_to_codex" --> X["<b>Codex</b><br/>runs the prompt"]
+    X -- "receipt" --> C
+    classDef claude fill:#D97757,stroke:#D97757,color:#FFFFFF
+    classDef codex fill:#F7F7F5,stroke:#2A2A2C,color:#111111
+    class C claude
+    class X codex
+```
 
 Each round has three steps:
 
