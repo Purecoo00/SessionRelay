@@ -72,7 +72,7 @@ cd /path/to/SessionRelay
 
 安装并登录 [Claude Code](https://code.claude.com/docs/zh-CN/setup) 和 Codex。应用从 Windows 的 `PATH` 查找 `claude` 和 `codex`。安装 Git for Windows，以便原会话接力通过 Claude Code 的 Bash 工具运行等待命令。要在桌面对话里审查，请使用 Claude Desktop。
 
-从成功的 Windows Actions 运行下载 `Session-Relay-Windows-x64`，把完整目录解压到固定位置并打开 `Session Relay.exe`。包内自带 Python worker。从源码运行或自行打包时，在仓库目录用 PowerShell 执行：
+从[最新 Release](https://github.com/Purecoo00/SessionRelay/releases/latest) 下载 `Session-Relay-<版本>-Windows-x64.zip`，把完整目录解压到固定位置并打开 `Session Relay.exe`。包内自带 Python worker。从源码运行或自行打包时，在仓库目录用 PowerShell 执行：
 
 ```powershell
 py -3.13 -m venv .venv

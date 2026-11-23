@@ -72,7 +72,7 @@ The build is signed ad hoc for your own Mac. A copy downloaded from elsewhere is
 
 Install and sign in to [Claude Code](https://code.claude.com/docs/en/setup) and Codex. The app looks up `claude` and `codex` on your Windows `PATH`. Install Git for Windows so Claude Code can run the in-session wait command with its Bash tool. Use Claude Desktop for reviews in a desktop conversation.
 
-Download the `Session-Relay-Windows-x64` artifact from a successful Windows Actions run, extract the entire folder to a stable location, and open `Session Relay.exe`. The package includes its Python worker. To run from source or build the package yourself, use Python 3.13 in PowerShell from the repository:
+Download `Session-Relay-<version>-Windows-x64.zip` from the [latest release](https://github.com/Purecoo00/SessionRelay/releases/latest), extract the entire folder to a stable location, and open `Session Relay.exe`. The package includes its Python worker. To run from source or build the package yourself, use Python 3.13 in PowerShell from the repository:
 
 ```powershell
 py -3.13 -m venv .venv
