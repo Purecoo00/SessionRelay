@@ -3,7 +3,9 @@
 <p align="center">
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-D97757"></a>
   <img alt="macOS 14+" src="https://img.shields.io/badge/macOS-14%2B-111111?logo=apple&logoColor=white">
+  <img alt="Windows 10+" src="https://img.shields.io/badge/Windows-10%2B-0078D4?logo=windows&logoColor=white">
   <img alt="SwiftUI" src="https://img.shields.io/badge/SwiftUI-F05138?logo=swift&logoColor=white">
+  <img alt="PySide6" src="https://img.shields.io/badge/PySide6-41CD52?logo=qt&logoColor=white">
   <img alt="Python 3" src="https://img.shields.io/badge/Python-3-3776AB?logo=python&logoColor=white">
   <img alt="MCP" src="https://img.shields.io/badge/MCP-tools-444444">
 </p>
@@ -123,14 +125,20 @@ claude mcp add -s local codex_relay -- /usr/bin/python3 -B /path/to/SessionRelay
 
 ## 运行记录
 
-所有记录都保存在项目的 `.session-relay/` 目录里，这个目录会自动被 git 忽略。每一轮的 prompt、完整回执、审查和结论都在里面。超过 90 KB 的回执还会拆成每页 16 KiB 的分页，方便 Claude 读取。点「运行目录」可以在 Finder 里打开当前这次运行。
+所有记录都保存在项目的 `.session-relay/` 目录里，这个目录会自动被 git 忽略。每一轮的 prompt、完整回执、审查和结论都在里面。超过 90 KB 的回执还会拆成每页 16 KiB 的分页，方便 Claude 读取。点「运行目录」可以在 Finder 或文件资源管理器里打开当前这次运行。
 
 ## 语言
 
-App 和它的提示信息跟随 macOS 的系统语言（中文或英文）。也可以单独指定：
+App 和它的提示信息跟随系统语言（中文或英文）。在 macOS 上可以单独指定：
 
 ```sh
 defaults write local.sessionrelay.mac AppleLanguages '("zh-Hans")'
+```
+
+在 Windows 上设置 `SESSION_RELAY_LANG` 后重启 App。原会话接力的 MCP 服务器和等待命令也读取这个变量：
+
+```powershell
+setx SESSION_RELAY_LANG zh
 ```
 
 ## 已知限制
@@ -141,7 +149,7 @@ Session Relay 用到的几项接口都没有为这种用途提供稳定版本，
 - Claude Code 的本地会话记录和 Claude 桌面版的会话元数据，用来列出会话、把桌面对话带进审查、检测桌面活动；
 - Claude Code 的 `stream-json` 输出和 `claude mcp add`。
 
-同一个 Codex 会话或 Claude Code 会话同时只能参与一个正在运行的接力。已在 macOS 27、2026 年末的 Codex 和 Claude Code 版本上测试过。
+同一个 Codex 会话或 Claude Code 会话同时只能参与一个正在运行的接力。已在 macOS 27、2026 年末的 Codex 和 Claude Code 版本上测试过。Windows 版在 `windows-latest` 上通过同一套测试，并在 Windows 真机上配合 Codex 验证过；其中依赖 Claude Code 的部分（会话发现、登录、原会话接力的等待命令和 App 驱动运行）目前只经过模拟程序测试。
 
 ## 开发
 

@@ -3,7 +3,9 @@
 <p align="center">
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-D97757"></a>
   <img alt="macOS 14+" src="https://img.shields.io/badge/macOS-14%2B-111111?logo=apple&logoColor=white">
+  <img alt="Windows 10+" src="https://img.shields.io/badge/Windows-10%2B-0078D4?logo=windows&logoColor=white">
   <img alt="SwiftUI" src="https://img.shields.io/badge/SwiftUI-F05138?logo=swift&logoColor=white">
+  <img alt="PySide6" src="https://img.shields.io/badge/PySide6-41CD52?logo=qt&logoColor=white">
   <img alt="Python 3" src="https://img.shields.io/badge/Python-3-3776AB?logo=python&logoColor=white">
   <img alt="MCP" src="https://img.shields.io/badge/MCP-tools-444444">
 </p>
@@ -123,14 +125,20 @@ These reviews do not appear in the Claude desktop window. Follow them on the **C
 
 ## Records
 
-Everything is kept in `.session-relay/` inside your project, which is git-ignored automatically: prompts, full receipts, reviews and decisions for each round. Receipts over 90 KB are also split into 16 KiB pages that Claude can read. **Run Folder** opens the current run in Finder.
+Everything is kept in `.session-relay/` inside your project, which is git-ignored automatically: prompts, full receipts, reviews and decisions for each round. Receipts over 90 KB are also split into 16 KiB pages that Claude can read. **Run Folder** opens the current run in Finder or File Explorer.
 
 ## Language
 
-The app and its messages follow your macOS language (Chinese or English). To choose one explicitly:
+The app and its messages follow your system language (Chinese or English). To choose one explicitly on macOS:
 
 ```sh
 defaults write local.sessionrelay.mac AppleLanguages '("en")'
+```
+
+On Windows, set `SESSION_RELAY_LANG` and restart the app. The in-session relay's MCP server and wait command read the same variable:
+
+```powershell
+setx SESSION_RELAY_LANG en
 ```
 
 ## Limitations
@@ -141,7 +149,7 @@ Session Relay talks to tools that do not publish a stable interface for this, so
 - Claude Code's local transcript files and the Claude desktop app's session metadata, used to list sessions, carry desktop messages into reviews and detect desktop activity;
 - Claude Code's `stream-json` output and `claude mcp add`.
 
-A Codex chat or Claude Code session can be in one running relay at a time. It has been tested on macOS 27 with the Codex and Claude Code versions current in late 2026.
+A Codex chat or Claude Code session can be in one running relay at a time. It has been tested on macOS 27 with the Codex and Claude Code versions current in late 2026. The Windows version passes the same tests on `windows-latest` and has been checked on a Windows machine with Codex; its Claude Code parts (session discovery, sign-in, the in-session wait command and app-driven runs) have so far been covered only by the test doubles.
 
 ## Development
 
@@ -165,6 +173,8 @@ SESSION_RELAY_DEMO=1 SESSION_RELAY_SNAPSHOT=/path/to/shots \
 | `live.py` | In-session relay: dispatch, background worker, `wait` |
 | `relay_mcp.py` | MCP servers: per-review handoff and the persistent `codex_relay` |
 | `agents.py` | Claude Code and Codex App Server transports |
+| `relay_platform.py` | macOS and Windows differences: data folders, locks, processes |
+| `windows/` | PySide6 interface for Windows, PyInstaller spec and SVG icons |
 | `i18n.py` | Chinese and English messages |
 | `en.lproj`, `zh-Hans.lproj` | UI translations |
 | `icon/make_icon.swift` | Draws the app icon |
