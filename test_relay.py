@@ -12,7 +12,7 @@ import uuid
 from pathlib import Path
 from unittest.mock import patch
 
-from agents import Claude, Codex, desktop_notes, project_sessions, resolve_claude_id
+from agents import Claude, Codex, codex_threads, desktop_notes, project_sessions, resolve_claude_id
 import i18n
 from relay import (DIGEST, conversation, parse_decision, register_mcp, review_evidence, run_loop, task_document,
                    workspace)
@@ -57,6 +57,12 @@ if sys.argv[1]=="app-server":
             result={"data":[{"item":{"type":"agentMessage","text":"seed"}}]}
         elif name=="thread/resume":
             assert p["threadId"]==sid; result={}
+        elif name=="thread/list":
+            assert p["cwd"]==str(root)
+            result={"data":[{"id":"a","name":"Main","cwd":str(root),"updatedAt":5},
+                            {"id":"b","name":None,"preview":"hello   world","cwd":str(root),"updatedAt":3},
+                            {"id":"c","parentThreadId":"a","cwd":str(root),"updatedAt":4},
+                            {"id":"d","name":"Elsewhere","cwd":"/","updatedAt":6}]}
         elif name=="turn/start":
             assert p["threadId"]==sid
             text=reply(p["input"][0]["text"]); turn="target"
@@ -470,7 +476,8 @@ class LiveRelayTest(unittest.TestCase):
         cli.write_text(DRIVER)
         cli.chmod(0o700)
         env = patch.dict(os.environ, {"SESSION_RELAY_CODEX_BIN": str(cli),
-                                      "SESSION_RELAY_SUPPORT": str(self.root / "support")})
+                                      "SESSION_RELAY_SUPPORT": str(self.root / "support"),
+                                      "CLAUDE_CONFIG_DIR": str(self.root / "claude-config")})
         env.start()
         self.addCleanup(env.stop)
         support = patch("relay.SUPPORT", self.root / "support")
@@ -478,9 +485,9 @@ class LiveRelayTest(unittest.TestCase):
         self.addCleanup(support.stop)
         self.codex = str(uuid.uuid4())
 
-    def server(self):
+    def server(self, **env):
         proc = subprocess.Popen([sys.executable, "-B", str(HERE / "relay_mcp.py"), "--live", "--project", str(self.root)],
-                                stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+                                stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, env=dict(os.environ, **env))
         self.addCleanup(lambda: (proc.stdin.close(), proc.stdout.close(), proc.wait()))
         counter = iter(range(1, 1000))
         def call(method, **params):
@@ -540,6 +547,39 @@ class LiveRelayTest(unittest.TestCase):
         error, text = self.tool(call, SEND, prompt=prompt)
         self.assertTrue(error)
         self.assertIn("暂停", text)
+
+    def test_pairs_in_one_project_route_by_the_calling_session(self):
+        first, second = str(uuid.uuid4()), str(uuid.uuid4())
+        live.bind(self.root, self.codex, check=False, document=DOC, claude=first)
+        folder = live.bind(self.root, str(uuid.uuid4()), check=False, document=DOC, pair="p-two", claude=second)
+        self.assertEqual(folder.parent, live.base(self.root) / "p-two")
+        with self.assertRaisesRegex(ValueError, "选定 Claude Code 会话"):
+            live.bind(self.root, self.codex, check=False, document=DOC, pair="p-3")
+        with self.assertRaisesRegex(ValueError, "另一个配对"):
+            live.bind(self.root, self.codex, check=False, document=DOC, pair="p-3", claude=first)
+        with self.assertRaises(ValueError):
+            live.base(self.root, "../escape")
+        self.assertEqual(live.route(self.root, {"CLAUDE_CODE_SESSION_ID": first}), "")
+        self.assertEqual(live.route(self.root, {"CLAUDE_CODE_SESSION_ID": second}), "p-two")
+        with self.assertRaisesRegex(ValueError, "没有绑定"):
+            live.route(self.root, {"CLAUDE_CODE_SESSION_ID": str(uuid.uuid4())})
+
+        (live.base(self.root) / "pause").write_text("")  # Pausing the first pair leaves the second running.
+        call = self.server(CLAUDE_CODE_SESSION_ID=second)
+        error, text = self.tool(call, SEND, prompt="exact\n任务  $HOME")
+        self.assertFalse(error, text)
+        self.assertIn("--pair p-two", text)
+        done = self.wait(text)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn(str(folder / "001-receipt.txt"), done.stdout)
+        self.assertIn("已派出 1 / 3 轮", self.tool(call, "relay_status")[1])
+        error, text = self.tool(self.server(CLAUDE_CODE_SESSION_ID=first), SEND, prompt="x")
+        self.assertTrue(error)
+        self.assertIn("暂停", text)
+
+    def test_codex_chats_are_listed_for_the_picker(self):
+        chats = codex_threads(self.root)
+        self.assertEqual([(c["id"], c["title"]) for c in chats], [("a", "Main"), ("b", "hello world")])
 
     def test_rebinding_reuses_an_unused_run(self):
         first = live.bind(self.root, self.codex, limit=3, check=False, document=DOC)

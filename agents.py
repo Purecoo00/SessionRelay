@@ -387,6 +387,8 @@ class Codex:
         try:
             self.rpc("initialize", {"clientInfo":{"name":"session_relay","version":"1.0"}})
             self.send({"method":"initialized"})
+            if sid is None:  # Only listing chats.
+                return
             thread = self.rpc("thread/read", {"threadId":sid})["thread"]
             if thread["id"] != sid or Path(thread["cwd"]).resolve() != root:
                 raise RuntimeError(t(f"Codex 会话的项目是 {thread.get('cwd')}。请选择同一项目目录。",
@@ -645,3 +647,22 @@ class Codex:
                 if not final:
                     raise RuntimeError(t("Codex 本轮缺少最终答复。", "The Codex turn has no final answer."))
                 return final, receipt
+
+
+def codex_threads(root, limit=40):
+    """The project's top-level Codex chats, newest first, for the chat picker."""
+    root = Path(root).expanduser().resolve()
+    codex = Codex(None, root)
+    try:
+        rows = codex.rpc("thread/list", {"cwd":str(root), "limit":limit, "sortKey":"updated_at"}).get("data", [])
+    finally:
+        codex.close()
+    chats = []
+    for row in rows:
+        if row.get("parentThreadId") or row.get("attachedToThreadId") or row.get("ephemeral"):
+            continue  # Sub-agents and scratch threads are not chats you can bind.
+        if Path(row.get("cwd") or "/").resolve() != root:
+            continue
+        title = row.get("name") or short(row.get("preview") or "", 60) or row["id"]
+        chats.append(dict(id=row["id"], title=title, modified=float(row.get("updatedAt") or 0)))
+    return chats

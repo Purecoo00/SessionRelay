@@ -123,3 +123,21 @@
 "取消" = "Cancel";
 "打开终端" = "Open Terminal";
 "将在项目目录打开 Claude Code 并自动填入新 ID。首次使用时请完成登录。它会先阅读任务文档，你可以补充旧 Chat 中尚未记录的决定。" = "Claude Code opens in the project folder and its new ID is filled in for you. Sign in on first use. It reads the task document first; you can add decisions from older chats that are not written down yet.";
+
+/* Pairs */
+"配对" = "Pairs";
+"当前配对" = "This Pair";
+"配对信息" = "Pair";
+"新建配对" = "New Pair";
+"新配对" = "New pair";
+"名称" = "Name";
+"复制配对" = "Duplicate Pair";
+"删除配对…" = "Delete Pair…";
+"删除" = "Delete";
+"删除配对「%@」？" = "Delete the pair \"%@\"?";
+"会关闭它的原会话接力绑定。运行记录保留在项目的 .session-relay 文件夹里。" = "This turns off its in-session relay binding. Run records stay in the project's .session-relay folder.";
+"任务文档是指挥者每轮阅读和更新的 Markdown 文件，可以放在项目里的任何位置。名称留空时使用 Codex 会话的标题。" = "The task document is the Markdown file the lead reads and updates every round. It can live anywhere in the project. Leave the name empty to use the Codex chat's title.";
+"两边都可以从本项目的会话里选，也可以粘贴 Codex 会话的 ID 或链接、Claude Code 会话的 UUID 或桌面 Code 的 local_ 标识。" = "Pick either side from this project's sessions, or paste a Codex chat ID or link, a Claude Code session UUID, or a desktop local_ ID.";
+"读不到本项目的 Codex 会话列表，可以直接粘贴 ID 或链接：" = "Could not list this project's Codex chats; paste an ID or link instead: ";
+"这个项目里还有其他配对。codex_relay 按调用它的 Claude Code 会话找到对应的配对，所以每个配对都要选定自己的 Claude Code 会话。" = "This project has other pairs. codex_relay finds the pair by the Claude Code session that calls it, so each pair needs its own Claude Code session.";
+"本次打开 App 以来这个配对的连接、交接和错误会记录在这里。" = "Connections, handoffs and errors for this pair since the app opened appear here.";

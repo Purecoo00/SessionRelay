@@ -94,14 +94,38 @@ enum Demo {
                 "001-mcp.json"),
     ] }
 
-    static func seed(_ w: Workspace) {
-        w.project = "/path/to/parser-kit"
-        w.document = "/path/to/parser-kit/docs/task.md"
-        w.codex = "019a3f2e-7c41-7d20-9b6e-2f5a8c1d4e77"
-        w.claude = "5c8e2b14-3a9d-4f61-8e27-b0d9c6a1f3e2"
-        w.limit = 5
-        w.relayMode = "live"
-        let ctl = w.ctl
+    static func seed(_ store: Store) {
+        func name(_ zh: String, _ en: String) -> String { english ? en : zh }
+        let project = "/path/to/parser-kit"
+        var main = Pair(id: "")
+        main.name = name("parser-kit · 边界测试", "parser-kit · edge cases")
+        main.project = project; main.document = project + "/docs/task.md"
+        main.codex = "019a3f2e-7c41-7d20-9b6e-2f5a8c1d4e77"; main.claude = "5c8e2b14-3a9d-4f61-8e27-b0d9c6a1f3e2"
+        main.limit = 5
+        var perf = Pair(id: "p-perf")
+        perf.name = name("parser-kit · 性能", "parser-kit · performance")
+        perf.project = project; perf.document = project + "/docs/perf.md"
+        perf.codex = "019a4410-2b7e-7f13-a6c4-5d0e9b8f2a61"; perf.claude = "8f1d3c27-6b4e-4a90-9d52-c7e1a0b6f384"
+        var docs = Pair(id: "p-docs")
+        docs.name = name("文档站点", "Docs site")
+        docs.project = "/path/to/docs-site"; docs.document = "/path/to/docs-site/TODO.md"
+        docs.relayMode = "app"
+        store.pairs = [main, perf, docs]
+        store.selected = main.id
+        store.discovery[project] = CodeDiscovery(
+            loggedIn: true,
+            sessions: [CodeSession(id: main.claude, title: name("审查：边界测试", "Review: edge cases"), alias: "", modified: 1767250800),
+                       CodeSession(id: perf.claude, title: name("审查：性能", "Review: performance"), alias: "", modified: 1767247200)],
+            codex: [CodexChat(id: main.codex, title: name("parser 边界测试", "parser edge cases"), modified: 1767250800),
+                    CodexChat(id: perf.codex, title: name("parser 性能调优", "parser performance"), modified: 1767247200)],
+            codexError: "")
+
+        store.run(perf.id).liveEnabled = true
+        store.run(perf.id).livePaused = true
+        store.run(perf.id).status = "原会话接力已启用"
+        store.run(docs.id).status = "已完成"
+
+        let ctl = store.run(main.id)
         ctl.chat = chat
         ctl.liveEnabled = true
         ctl.status = "原会话接力已启用"
@@ -120,28 +144,28 @@ enum Demo {
         ]
         ctl.entries = lines.enumerated().map { Entry(time: now.addingTimeInterval(Double($0.offset - 4) * 140), message: $0.element) }
         if let folder = ProcessInfo.processInfo.environment["SESSION_RELAY_SNAPSHOT"] {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { snapshot(folder, ctl) }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { snapshot(folder, store, ctl) }
         }
     }
 
-    static func snapshot(_ folder: String, _ ctl: Controller) {
+    static func snapshot(_ folder: String, _ store: Store, _ ctl: Run) {
         guard let window = NSApp.windows.first(where: { $0.isVisible }) else { NSApp.terminate(nil); return }
-        window.setContentSize(NSSize(width: 1080, height: 720))
+        window.setContentSize(NSSize(width: 1120, height: 720))
         window.center()
         var steps: [(String, () -> Void)] = []
         for (name, look) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
             for tab in ["setup", "chat", "log"] {
-                steps.append(("\(tab)-\(name)", { NSApp.appearance = NSAppearance(named: look); ctl.tab = tab }))
+                steps.append(("\(tab)-\(name)", { NSApp.appearance = NSAppearance(named: look); store.tab = tab }))
             }
             steps.append(("chat-live-\(name)", {
-                ctl.tab = "chat"; ctl.busy = true; ctl.stage = "review"; ctl.round = 2; ctl.status = "指挥者审查中"
+                store.tab = "chat"; ctl.busy = true; ctl.stage = "review"; ctl.round = 2; ctl.status = "指挥者审查中"
                 ctl.liveRole = "claude"
                 ctl.liveText = english
                     ? "Checking the test output in the round 2 receipt…\n\n▸ Read tests/test_parser.py\n\n▸ Read src/parser.py"
                     : "正在核对第 2 轮回执里的测试输出…\n\n▸ Read tests/test_parser.py\n\n▸ Read src/parser.py"
             }))
             steps.append(("note-\(name)", {
-                ctl.busy = false; ctl.liveText = ""; ctl.status = "桌面窗口正在使用"; ctl.tab = "setup"
+                ctl.busy = false; ctl.liveText = ""; ctl.status = "桌面窗口正在使用"; store.tab = "setup"
                 ctl.note = english
                     ? "The desktop window used this Claude session within the last 2 min. To keep both sides from editing the task document at once, the relay paused before calling Claude."
                     : "桌面窗口约 2 分钟内还在使用这个 Claude 会话。为避免两边同时修改任务文档，接力在调用 Claude 之前暂停。"

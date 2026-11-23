@@ -23,6 +23,7 @@ Session Relay is a small macOS app that closes the loop between a **Claude Code*
 
 - **One conversation.** In-session relay keeps every review in the Claude desktop window you already use. Nothing forks and nothing hides in another process.
 - **Hands-off loop.** Claude dispatches with an MCP tool, a background worker drives Codex, and the receipt wakes Claude for the next review.
+- **Many pairs at once.** Keep a pair for each project or each line of work, even several in one project. Each pair has its own Codex chat, reviewer, task document and records.
 - **Safe by default.** A round limit, a pause switch, and a rule that each receipt is collected before the next prompt goes out.
 - **Everything on record.** Prompts, full receipts, reviews and decisions for every round are saved in your project.
 - **Native Mac app.** SwiftUI, light and dark mode, Chinese and English.
@@ -67,14 +68,18 @@ The build is signed ad hoc for your own Mac. A copy downloaded from elsewhere is
 
 ## Quick start: in-session relay
 
-1. Open Session Relay and choose your **project folder** and **task document**. The task document can be any Markdown file the lead should read and keep up to date, for example `/path/to/project/docs/task.md`.
-2. Paste the **Codex chat** ID or link (from the Codex chat menu) and set a round limit.
+1. Open Session Relay and select a pair in the sidebar, or click **+** to add one. Choose its **project folder** and **task document**. The task document can be any Markdown file the lead should read and keep up to date, for example `/path/to/project/docs/task.md`.
+2. Pick the **Codex chat** from the project's chats, or paste its ID or link. Pick the **Claude Code session** that reviews, and set a round limit.
 3. Click **Turn On In-Session Relay**. This binds the Codex chat and registers the `codex_relay` MCP tools for this project on this Mac (Claude Code's local scope), so there is no `.mcp.json` to write and nothing machine-specific in your repository.
 4. Start a new conversation in your reviewer session so the tools load.
 5. Ask Claude to review and dispatch with `send_to_codex`. From then on, each round works like this:
    - `send_to_codex` hands the prompt to a background worker, which owns the Codex turn until it ends. The tool returns right away.
    - Claude runs the returned `relay.py wait …` command in the background and ends its reply. You can keep chatting meanwhile.
    - When Codex finishes, the wait command exits. The desktop app wakes Claude with the receipt, and Claude reviews it, updates the task document and decides the next step.
+
+### Several pairs in one project
+
+All pairs in a project share one `codex_relay` registration. Claude Code tells the tool which session is calling, and the tool dispatches to that session's pair, so give each pair its own Claude Code session. A project with a single pair accepts any session, as before.
 
 ### Safeguards
 
@@ -118,7 +123,7 @@ Session Relay talks to tools that do not publish a stable interface for this, so
 - Claude Code's local transcript files and the Claude desktop app's session metadata, used to list sessions, carry desktop messages into reviews and detect desktop activity;
 - Claude Code's `stream-json` output and `claude mcp add`.
 
-It runs on macOS only, with one relay per pair of sessions at a time. It has been tested on macOS 27 with the Codex and Claude Code versions current in late 2026.
+It runs on macOS only. A Codex chat or Claude Code session can be in one running relay at a time. It has been tested on macOS 27 with the Codex and Claude Code versions current in late 2026.
 
 ## Development
 

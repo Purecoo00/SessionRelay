@@ -43,7 +43,7 @@ struct ChatMessage: Identifiable {
     }
 }
 
-struct CodeSession: Identifiable, Decodable {
+struct CodeSession: Identifiable, Decodable, Equatable {
     let id: String
     let title: String
     let alias: String
@@ -54,46 +54,139 @@ struct CodeSession: Identifiable, Decodable {
     }
 }
 
-struct CodeDiscovery: Decodable {
-    let loggedIn: Bool
-    let sessions: [CodeSession]
+struct CodexChat: Identifiable, Decodable, Equatable {
+    let id: String
+    let title: String
+    let modified: Double
+    var label: String {
+        let date = Date(timeIntervalSince1970: modified).formatted(date: .abbreviated, time: .shortened)
+        return "\(title) · \(date)"
+    }
 }
 
-final class Controller: ObservableObject {
+struct CodeDiscovery: Decodable, Equatable {
+    let loggedIn: Bool
+    let sessions: [CodeSession]
+    let codex: [CodexChat]
+    let codexError: String
+}
+
+/// One Claude Code reviewer and one Codex chat, with their project and relay settings.
+struct Pair: Codable, Identifiable, Equatable {
+    /// "" is the first pair, whose in-session binding lives in .session-relay/live/ itself.
+    var id: String
+    var name = ""
+    var project = ""
+    var document = ""
+    var codex = ""
+    var claude = ""
+    var manager = "claude"
+    var mode = "latest"
+    var goal = ""
+    var relayMode = "live"
+    var limit = 3
+
+    static func fresh(like other: Pair?) -> Pair {
+        var p = Pair(id: "p-" + UUID().uuidString.prefix(8).lowercased())
+        if let other { p.project = other.project; p.document = other.document; p.relayMode = other.relayMode; p.limit = other.limit }
+        return p
+    }
+}
+
+/// The list of pairs, which one is shown, and what each project's sessions look like.
+final class Store: ObservableObject {
+    @Published var pairs: [Pair] { didSet { save() } }
+    @Published var selected: String { didSet { if !demoMode { UserDefaults.standard.set(selected, forKey: "selectedPair") } } }
     @Published var tab = "setup"
     @Published var showCreate = false
-    @Published var busy = false
-    @Published var status = "等待选择会话"
-    @Published var discovery: CodeDiscovery?
-    @Published var discoveryError = ""
-    private var discoveryVersion = 0
-    private var probingProject: String?
-    var checkedPair = ""
-    @Published var entries: [Entry] = []
-    @Published var note = ""
-    @Published var folder = UserDefaults.standard.string(forKey: "lastRunFolder") ?? ""
-    @Published var pauseFile = ""
-    @Published var pausedRequested = false
-    @Published var stage = ""
-    @Published var round = 0
-    @Published var createdID = ""
-    @Published var chat: [ChatMessage] = []
-    @Published var liveRole = ""
-    @Published var liveText = ""
-    @Published var desktopBlocked = false
-    @Published var livePaused = false
-    @Published var liveEnabled = false
-    @Published var expanded: Set<String> = []  // Chat cards showing their full text.
-    private var historyVersion = 0
-    private var proc: Process?
-    static let shared = Controller()
+    @Published var deleting: Pair?
+    @Published var discovery: [String: CodeDiscovery] = [:]
+    @Published var discoveryError: [String: String] = [:]
+    private var probing: Set<String> = []
+    private var runs: [String: Run] = [:]
+    static let shared = Store()
+
+    init() {
+        let d = UserDefaults.standard
+        var list: [Pair]
+        if !demoMode, let data = d.data(forKey: "pairs"), let saved = try? JSONDecoder().decode([Pair].self, from: data), !saved.isEmpty {
+            list = saved
+        } else {
+            // Before pairs existed the app kept one set of settings; it becomes the first pair.
+            var p = Pair(id: "")
+            if !demoMode {
+                p.project = d.string(forKey: "project") ?? ""; p.document = d.string(forKey: "document") ?? ""
+                p.codex = d.string(forKey: "codex") ?? ""; p.claude = d.string(forKey: "claude") ?? ""
+                p.manager = d.string(forKey: "manager") ?? "claude"; p.mode = d.string(forKey: "mode") ?? "latest"
+                p.goal = d.string(forKey: "goal") ?? ""; p.relayMode = d.string(forKey: "relayMode") ?? "live"
+                p.limit = d.object(forKey: "limit") as? Int ?? 3
+            }
+            list = [p]
+        }
+        let last = demoMode ? nil : d.string(forKey: "selectedPair")
+        pairs = list
+        selected = last.flatMap { id in list.contains { $0.id == id } ? id : nil } ?? list[0].id
+    }
+
+    private func save() {
+        guard !demoMode, let data = try? JSONEncoder().encode(pairs) else { return }
+        UserDefaults.standard.set(data, forKey: "pairs")
+    }
+
+    var current: Pair { pairs.first { $0.id == selected } ?? pairs[0] }
+
+    func binding(_ id: String) -> Binding<Pair> {
+        Binding(get: { self.pairs.first { $0.id == id } ?? Pair(id: id) },
+                set: { value in if let i = self.pairs.firstIndex(where: { $0.id == id }) { self.pairs[i] = value } })
+    }
+
+    func run(_ id: String) -> Run {
+        if let r = runs[id] { return r }
+        let r = Run(id: id)
+        runs[id] = r
+        return r
+    }
+
+    var anyBusy: Bool { runs.values.contains { $0.busy } }
+    func terminateAll() { runs.values.forEach { $0.terminate() } }
+
+    /// The name shown in the sidebar: yours, else the Codex chat's title, else the folder.
+    func title(_ p: Pair) -> String {
+        if !p.name.isEmpty { return p.name }
+        if let chat = discovery[p.project]?.codex.first(where: { $0.id == p.codex }) { return chat.title }
+        if !p.project.isEmpty { return URL(fileURLWithPath: p.project).lastPathComponent }
+        return L("新配对")
+    }
+
+    func add() {
+        let p = Pair.fresh(like: current)
+        pairs.append(p)
+        selected = p.id; tab = "setup"
+    }
+
+    func duplicate(_ p: Pair) {
+        var copy = Pair.fresh(like: p)
+        copy.name = p.name.isEmpty ? "" : p.name + " 2"
+        copy.manager = p.manager; copy.mode = p.mode; copy.goal = p.goal
+        pairs.append(copy)
+        selected = copy.id; tab = "setup"
+    }
+
+    /// Forgets the pair and turns off its in-session binding. Run records stay in the project.
+    func delete(_ p: Pair) {
+        guard pairs.count > 1, !run(p.id).busy else { return }
+        if !p.project.isEmpty {
+            try? FileManager.default.removeItem(at: Run.liveBase(p).appendingPathComponent("binding.json"))
+        }
+        if selected == p.id { selected = pairs.first { $0.id != p.id }!.id }
+        pairs.removeAll { $0.id == p.id }
+        runs[p.id]?.terminate(); runs[p.id] = nil
+    }
 
     func discover(_ project: String) {
-        guard !demoMode, !project.isEmpty, probingProject != project else { return }
+        guard !demoMode, !project.isEmpty, !probing.contains(project) else { return }
         guard let worker = Bundle.main.url(forResource: "relay", withExtension: "py") else { return }
-        probingProject = project
-        discoveryVersion += 1
-        let version = discoveryVersion
+        probing.insert(project)
         DispatchQueue.global().async {
             let p = relayProcess(worker), input = Pipe(), output = Pipe()
             p.standardInput = input; p.standardOutput = output; p.standardError = FileHandle.nullDevice
@@ -110,16 +203,53 @@ final class Controller: ObservableObject {
                 }
                 let result = try JSONDecoder().decode(CodeDiscovery.self, from: reply)
                 DispatchQueue.main.async {
-                    guard version == self.discoveryVersion else { return }
-                    self.probingProject = nil; self.discoveryError = ""; self.discovery = result
+                    self.probing.remove(project); self.discoveryError[project] = nil
+                    if self.discovery[project] != result { self.discovery[project] = result }
                 }
             } catch {
                 DispatchQueue.main.async {
-                    guard version == self.discoveryVersion else { return }
-                    self.probingProject = nil; self.discovery = nil; self.discoveryError = error.localizedDescription
+                    self.probing.remove(project); self.discovery[project] = nil
+                    self.discoveryError[project] = error.localizedDescription
                 }
             }
         }
+    }
+}
+
+/// What one pair is doing right now: its relay process, status, conversation and log.
+final class Run: ObservableObject {
+    let id: String
+    @Published var busy = false
+    @Published var status = "等待选择会话"
+    var checkedPair = ""
+    @Published var entries: [Entry] = []
+    @Published var note = ""
+    @Published var folder: String
+    @Published var pauseFile = ""
+    @Published var pausedRequested = false
+    @Published var stage = ""
+    @Published var round = 0
+    @Published var createdID = ""
+    @Published var chat: [ChatMessage] = []
+    @Published var liveRole = ""
+    @Published var liveText = ""
+    @Published var desktopBlocked = false
+    @Published var livePaused = false
+    @Published var liveEnabled = false
+    @Published var expanded: Set<String> = []  // Chat cards showing their full text.
+    private var historyVersion = 0
+    private var proc: Process?
+
+    init(id: String) {
+        self.id = id
+        folder = UserDefaults.standard.string(forKey: Run.folderKey(id)) ?? ""
+    }
+
+    /// The first pair keeps the key used before pairs existed.
+    static func folderKey(_ id: String) -> String { id.isEmpty ? "lastRunFolder" : "lastRunFolder." + id }
+
+    func remember(_ folder: String) {
+        if !demoMode { UserDefaults.standard.set(folder, forKey: Run.folderKey(id)) }
     }
 
     var digestPath: String {
@@ -128,31 +258,41 @@ final class Controller: ObservableObject {
             .appendingPathComponent("LATEST.md").path
     }
 
-    func liveBase(_ project: String) -> URL {
-        URL(fileURLWithPath: project).appendingPathComponent(".session-relay/live")
+    /// Mirrors live.base(): the first pair uses live/ itself, the others live/<id>/.
+    static func liveBase(_ p: Pair) -> URL {
+        let live = URL(fileURLWithPath: p.project).appendingPathComponent(".session-relay/live")
+        return p.id.isEmpty ? live : live.appendingPathComponent(p.id)
+    }
+
+    /// Reads whether the pair is bound or paused; cheap enough for every pair on each tick.
+    func refreshFlags(_ p: Pair) {
+        guard !demoMode, !p.project.isEmpty else { return }
+        let base = Run.liveBase(p), fm = FileManager.default
+        let enabled = fm.fileExists(atPath: base.appendingPathComponent("binding.json").path)
+        let paused = fm.fileExists(atPath: base.appendingPathComponent("pause").path)
+        if enabled != liveEnabled { liveEnabled = enabled }
+        if paused != livePaused { livePaused = paused }
     }
 
     /// Follows the live run the reviewer session is using, then reloads the chat from disk.
-    func refreshLive(_ project: String) {
-        guard !demoMode, !project.isEmpty else { return }
-        let base = liveBase(project)
-        let fm = FileManager.default
-        liveEnabled = fm.fileExists(atPath: base.appendingPathComponent("binding.json").path)
-        livePaused = fm.fileExists(atPath: base.appendingPathComponent("pause").path)
+    func refreshLive(_ p: Pair) {
+        guard !demoMode, !p.project.isEmpty else { return }
+        refreshFlags(p)
+        let base = Run.liveBase(p)
         if folder.hasPrefix(base.path + "/"),
            let name = try? String(contentsOf: base.appendingPathComponent("current"), encoding: .utf8)
                 .trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty {
             let next = base.appendingPathComponent(name).path
             if next != folder {
                 folder = next; chat = []
-                UserDefaults.standard.set(next, forKey: "lastRunFolder")
+                remember(next)
             }
         }
         loadHistory()
     }
 
-    func setLivePause(_ project: String, _ paused: Bool) {
-        let file = liveBase(project).appendingPathComponent("pause")
+    func setLivePause(_ p: Pair, _ paused: Bool) {
+        let file = Run.liveBase(p).appendingPathComponent("pause")
         do {
             if paused { try Data().write(to: file, options: .atomic) }
             else if FileManager.default.fileExists(atPath: file.path) { try FileManager.default.removeItem(at: file) }
@@ -211,7 +351,7 @@ final class Controller: ObservableObject {
         case "folder":
             if folder != m { chat = [] }
             folder = m
-            UserDefaults.standard.set(m, forKey: "lastRunFolder")
+            remember(m)
             return
         case "login": status = "等待登录"; note = m
         case "created":
@@ -306,14 +446,14 @@ final class Controller: ObservableObject {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        if Controller.shared.busy {
+        if Store.shared.anyBusy {
             let alert = NSAlert()
             alert.messageText = L("交接正在进行")
             alert.informativeText = L("现在退出会中断接力。也可以保留窗口，点「本轮后暂停」保存交接点。")
             alert.addButton(withTitle: L("保留窗口"))
             alert.addButton(withTitle: L("退出"))
             if alert.runModal() == .alertFirstButtonReturn { return .terminateCancel }
-            Controller.shared.terminate()
+            Store.shared.terminateAll()
         }
         return .terminateNow
     }

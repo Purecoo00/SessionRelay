@@ -16,7 +16,7 @@ import time
 import uuid
 from pathlib import Path
 
-from agents import (Claude, Codex, claude_auth, claude_env, codex_view, compact, executable, latest_claude,
+from agents import (Claude, Codex, claude_auth, claude_env, codex_threads, codex_view, compact, executable, latest_claude,
                     project_sessions, resolve_claude_id, session_id, tool_line, transcript)
 from i18n import t
 from relay_mcp import FINISH, PREFIX, SEND, ReviewHandoff
@@ -617,14 +617,20 @@ def main():
     os.umask(0o077)
     config = json.loads(sys.stdin.readline())
     if config.get("command") == "discover":
-        emit("discovery", loggedIn=claude_auth(), sessions=project_sessions(config["project"]))
+        try:
+            chats, problem = codex_threads(config["project"]), ""
+        except Exception as exc:  # The Claude list is still useful without Codex.
+            chats, problem = [], str(exc)
+        emit("discovery", loggedIn=claude_auth(), sessions=project_sessions(config["project"]),
+             codex=chats, codexError=problem)
         return
     if config.get("command") in ("create", "login"):
         return bootstrap(config["project"], config["command"] == "login", config.get("document"))
     if config.get("command") == "bind":
         from live import bind
         limit = config.get("limit", 3)
-        folder = bind(config["project"], config["codex"], limit, document=config.get("document"))
+        folder = bind(config["project"], config["codex"], limit, document=config.get("document"),
+                      pair=config.get("pair", ""), claude=config.get("claude", ""))
         register_mcp(project_root(config["project"]))
         emit("folder", str(folder))
         emit("bound", t(f"已启用原会话接力，本次最多派出 {limit} 轮，并已在本机为这个项目注册 codex_relay。"
@@ -635,7 +641,7 @@ def main():
         return
     if config.get("command") == "history":
         folder = Path(config.get("folder", "")).expanduser()
-        ok = folder.is_dir() and folder.parent.parent.name == ".session-relay"
+        ok = folder.is_dir() and ".session-relay" in folder.parts
         emit("history", folder=str(folder), messages=conversation(folder) if ok else [])
         return
     root, doc, a, b = paths(config)

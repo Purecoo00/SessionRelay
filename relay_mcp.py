@@ -72,13 +72,14 @@ def respond_live(req, root):
     elif method == "tools/call":
         name, args = params.get("name"), params.get("arguments") or {}
         try:
+            pair = live.route(root)  # Several pairs can share a project; the caller's session picks one.
             if name == SEND and isinstance(args, dict) and set(args) == {"prompt"} \
                     and isinstance(args["prompt"], str) and args["prompt"].strip():
-                text = live.send(root, args["prompt"])
+                text = live.send(root, args["prompt"], pair=pair)
             elif name == STATUS and not args:
-                text = live.status(root)
+                text = live.status(root, pair)
             elif name == NEW_RUN and not args:
-                text = live.start_new_run(root)
+                text = live.start_new_run(root, pair)
             else:
                 raise ValueError(t("参数与工具定义不符，请核对后重新调用。", "Arguments do not match the tool definition."))
         except Exception as exc:

@@ -24,7 +24,7 @@ enum Tone {
     }
 }
 
-extension Controller {
+extension Run {
     /// Status strings are Chinese keys (see Localizable.strings); the tone follows the key.
     var tone: Tone {
         if busy { return .active }
@@ -165,101 +165,61 @@ struct MessageCard: View {
     }
 }
 
-// MARK: - Workspace
+// MARK: - Sidebar
 
-struct Workspace: View {
-    @ObservedObject var ctl = Controller.shared
-    @AppStorage("project") var project = ""
-    @AppStorage("document") var document = ""
-    @AppStorage("codex") var codex = ""
-    @AppStorage("claude") var claude = ""
-    @AppStorage("manager") var manager = "claude"
-    @AppStorage("mode") var mode = "latest"
-    @AppStorage("limit") var limit = 3
-    @AppStorage("goal") var goal = ""
-    @AppStorage("relayMode") var relayMode = "live"
-    var root: URL { URL(fileURLWithPath: project) }
-    var config: [String: Any] {
-        ["project": project, "document": document, "codex": codex, "claude": claude,
-         "manager": manager, "mode": mode, "limit": limit, "goal": goal]
-    }
-    var configured: Bool { !project.isEmpty && !document.isEmpty }
-    var ready: Bool { configured && !codex.isEmpty && !claude.isEmpty && (mode != "goal" || !goal.isEmpty) }
+struct PairRow: View {
+    @ObservedObject var store: Store
+    @ObservedObject var run: Run
+    let pair: Pair
 
-    /// The task document as shown: relative inside the project, absolute elsewhere.
-    var documentLabel: String {
-        guard !document.isEmpty else { return L("未选择") }
-        let prefix = root.path + "/"
-        return !project.isEmpty && document.hasPrefix(prefix) ? String(document.dropFirst(prefix.count)) : document
+    var dot: Color {
+        if run.busy { return .green }
+        if pair.relayMode == "live" && run.liveEnabled { return run.livePaused ? .orange : .green }
+        return run.tone == .neutral ? Color.secondary.opacity(0.45) : run.tone.color
     }
 
-    func action(_ name: String, force: Bool = false) {
-        var args = config; args["command"] = name
-        if force { args["mode"] = "resume"; args["force"] = true }
-        if name == "start" { ctl.tab = "chat" }
-        ctl.launch(args)
+    var subtitle: String {
+        let folder = pair.project.isEmpty ? L("未选择项目") : URL(fileURLWithPath: pair.project).lastPathComponent
+        return folder + " · " + (pair.relayMode == "live" ? L("原会话接力") : L("App 驱动"))
     }
 
-    var accountText: String {
-        if !ctl.discoveryError.isEmpty { return ctl.discoveryError }
-        guard let d = ctl.discovery else { return project.isEmpty ? L("先选择项目目录") : L("正在读取登录状态…") }
-        return d.loggedIn ? L("已登录") : L("尚未登录")
-    }
-
-    func selectSession(_ discovery: CodeDiscovery) {
-        let value = claude.trimmingCharacters(in: .whitespacesAndNewlines)
-        let last = value.split(separator: "/").last.map(String.init) ?? value
-        var sid = value
-        if value.isEmpty, discovery.sessions.count == 1 {
-            sid = discovery.sessions[0].id
-        } else if !last.isEmpty, let match = discovery.sessions.first(where: {
-            !$0.alias.isEmpty && ($0.alias == last || $0.alias == "local_" + last)
-        }) {
-            sid = match.id
-        }
-        if claude != sid { claude = sid }
-        guard !ctl.busy, configured else { return }
-        if discovery.loggedIn && !codex.isEmpty && !sid.isEmpty {
-            let key = [project, codex, sid].joined(separator: "|")
-            if ctl.checkedPair != key {
-                ctl.checkedPair = key
-                var args = config; args["command"] = "check"; args["claude"] = sid
-                ctl.launch(args)
+    var body: some View {
+        let selected = store.selected == pair.id
+        Button { store.selected = pair.id } label: {
+            HStack(spacing: 10) {
+                Image(systemName: pair.relayMode == "live" ? "link" : "arrow.triangle.2.circlepath")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(selected ? .white : accent)
+                    .frame(width: 26, height: 26)
+                    .background(selected ? accent : accent.opacity(0.14), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(store.title(pair)).font(.system(size: 13, weight: selected ? .semibold : .regular)).lineLimit(1)
+                    Text(subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                }
+                Spacer(minLength: 4)
+                Circle().fill(dot).frame(width: 7, height: 7)
             }
-        } else if ["等待选择会话", "等待登录", "已连接", "等待 Code 会话", "等待检查"].contains(ctl.status) {
-            ctl.checkedPair = ""
-            ctl.status = discovery.loggedIn ? "等待选择会话" : "等待登录"
+            .padding(.horizontal, 8).frame(height: 44)
+            .background(selected ? accent.opacity(0.12) : .clear, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .contextMenu {
+            Button("复制配对") { store.duplicate(pair) }
+            Divider()
+            Button("删除配对…", role: .destructive) { store.deleting = pair }
+                .disabled(store.pairs.count < 2 || run.busy)
         }
     }
+}
 
-    func choose() {
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = true; panel.canChooseFiles = false
-        panel.prompt = L("选择项目")
-        panel.message = L("选择项目根目录")
-        if !project.isEmpty { panel.directoryURL = root }
-        if panel.runModal() == .OK, let url = panel.url, project != url.path {
-            if ctl.discovery?.sessions.contains(where: { $0.id == claude }) == true { claude = "" }
-            ctl.discovery = nil; project = url.path
-        }
-    }
+struct PageRows: View {
+    @ObservedObject var store: Store
+    @ObservedObject var run: Run
 
-    func chooseDocument() {
-        let panel = NSOpenPanel()
-        panel.canChooseFiles = true; panel.canChooseDirectories = false
-        panel.allowedContentTypes = [UTType(filenameExtension: "md") ?? .plainText, .plainText]
-        panel.prompt = L("选择任务文档")
-        panel.message = L("选择指挥者每轮要阅读和更新的任务文档")
-        panel.directoryURL = document.isEmpty ? (project.isEmpty ? nil : root)
-                                              : URL(fileURLWithPath: document).deletingLastPathComponent()
-        if panel.runModal() == .OK, let url = panel.url { document = url.path }
-    }
-
-    // MARK: Sidebar
-
-    func navRow(_ key: String, _ label: LocalizedStringKey, _ symbol: String, badge: Int = 0) -> some View {
-        let selected = ctl.tab == key
-        return Button { ctl.tab = key } label: {
+    func row(_ key: String, _ label: LocalizedStringKey, _ symbol: String, badge: Int = 0) -> some View {
+        let selected = store.tab == key
+        return Button { store.tab = key } label: {
             HStack(spacing: 10) {
                 Image(systemName: symbol).frame(width: 18)
                     .foregroundStyle(selected ? accent : .secondary)
@@ -280,14 +240,37 @@ struct Workspace: View {
         .buttonStyle(.plain)
     }
 
-    var sidebar: some View {
+    var body: some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text("接力").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+            row("setup", "设置", "slider.horizontal.3")
+            row("chat", "对话", "bubble.left.and.bubble.right", badge: run.chat.count)
+            row("log", "运行记录", "list.bullet.rectangle")
+        }
+    }
+}
+
+struct Sidebar: View {
+    @ObservedObject var store: Store
+
+    func heading(_ text: LocalizedStringKey) -> some View {
+        Text(text).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+                HStack {
+                    heading("配对")
+                    Spacer()
+                    Button { store.add() } label: { Image(systemName: "plus") }
+                        .buttonStyle(.borderless).help("新建配对")
+                }
                 .padding(.horizontal, 10).padding(.bottom, 4)
-            navRow("setup", "设置", "slider.horizontal.3")
-            navRow("chat", "对话", "bubble.left.and.bubble.right", badge: ctl.chat.count)
-            navRow("log", "运行记录", "list.bullet.rectangle")
-            Spacer()
+                ForEach(store.pairs) { p in
+                    PairRow(store: store, run: store.run(p.id), pair: p)
+                }
+                heading("当前配对").padding(.horizontal, 10).padding(.top, 16).padding(.bottom, 4)
+                PageRows(store: store, run: store.run(store.selected))
+                Spacer()
         }
         .padding(.horizontal, 10).padding(.top, 8)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -302,27 +285,99 @@ struct Workspace: View {
             }
             .padding(.horizontal, 16).padding(.top, 6).padding(.bottom, 10)
         }
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            Button(action: choose) {
-                HStack(spacing: 10) {
-                    Image(systemName: "folder.fill").foregroundStyle(accent)
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text("当前项目").font(.caption).foregroundStyle(.secondary)
-                        Text(project.isEmpty ? L("选择项目…") : root.lastPathComponent)
-                            .font(.callout.weight(.medium)).lineLimit(1).truncationMode(.middle)
-                    }
-                    Spacer()
-                    Image(systemName: "chevron.up.chevron.down").font(.caption).foregroundStyle(.tertiary)
-                }
-                .padding(10)
-                .background(.quaternary.opacity(0.6), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain).disabled(ctl.busy)
-            .help(project.isEmpty ? L("选择项目目录") : project)
-            .padding(10)
+        .navigationSplitViewColumnWidth(min: 230, ideal: 270, max: 340)
+    }
+}
+
+// MARK: - Pair
+
+struct PairPage: View {
+    @ObservedObject var store: Store
+    @ObservedObject var run: Run
+    @Binding var p: Pair
+
+    var root: URL { URL(fileURLWithPath: p.project) }
+    var discovery: CodeDiscovery? { store.discovery[p.project] }
+    var config: [String: Any] {
+        ["pair": p.id, "project": p.project, "document": p.document, "codex": p.codex, "claude": p.claude,
+         "manager": p.manager, "mode": p.mode, "limit": p.limit, "goal": p.goal]
+    }
+    var configured: Bool { !p.project.isEmpty && !p.document.isEmpty }
+    var ready: Bool { configured && !p.codex.isEmpty && !p.claude.isEmpty && (p.mode != "goal" || !p.goal.isEmpty) }
+    /// Other pairs in the same project; with any, each in-session pair needs its own reviewer.
+    var siblings: Int { store.pairs.filter { $0.id != p.id && $0.project == p.project && !p.project.isEmpty }.count }
+
+    /// The task document as shown: relative inside the project, absolute elsewhere.
+    var documentLabel: String {
+        guard !p.document.isEmpty else { return L("未选择") }
+        let prefix = root.path + "/"
+        return !p.project.isEmpty && p.document.hasPrefix(prefix) ? String(p.document.dropFirst(prefix.count)) : p.document
+    }
+
+    /// A pasted link or ID, reduced to the ID the picker lists.
+    var codexID: String { p.codex.trimmingCharacters(in: .whitespacesAndNewlines).split(separator: "/").last.map(String.init) ?? "" }
+
+    func action(_ name: String, force: Bool = false) {
+        var args = config; args["command"] = name
+        if force { args["mode"] = "resume"; args["force"] = true }
+        if name == "start" { store.tab = "chat" }
+        run.launch(args)
+    }
+
+    var accountText: String {
+        if let error = store.discoveryError[p.project] { return error }
+        guard let d = discovery else { return p.project.isEmpty ? L("先选择项目目录") : L("正在读取登录状态…") }
+        return d.loggedIn ? L("已登录") : L("尚未登录")
+    }
+
+    func selectSession(_ discovery: CodeDiscovery) {
+        let value = p.claude.trimmingCharacters(in: .whitespacesAndNewlines)
+        let last = value.split(separator: "/").last.map(String.init) ?? value
+        var sid = value
+        if value.isEmpty, discovery.sessions.count == 1, siblings == 0 {
+            sid = discovery.sessions[0].id
+        } else if !last.isEmpty, let match = discovery.sessions.first(where: {
+            !$0.alias.isEmpty && ($0.alias == last || $0.alias == "local_" + last)
+        }) {
+            sid = match.id
         }
-        .navigationSplitViewColumnWidth(min: 200, ideal: 220, max: 280)
+        if p.claude != sid { p.claude = sid }
+        guard !run.busy, configured, p.relayMode == "app" else { return }
+        if discovery.loggedIn && !p.codex.isEmpty && !sid.isEmpty {
+            let key = [p.project, p.codex, sid].joined(separator: "|")
+            if run.checkedPair != key {
+                run.checkedPair = key
+                var args = config; args["command"] = "check"; args["claude"] = sid
+                run.launch(args)
+            }
+        } else if ["等待选择会话", "等待登录", "已连接", "等待 Code 会话", "等待检查"].contains(run.status) {
+            run.checkedPair = ""
+            run.status = discovery.loggedIn ? "等待选择会话" : "等待登录"
+        }
+    }
+
+    func choose() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true; panel.canChooseFiles = false
+        panel.prompt = L("选择项目")
+        panel.message = L("选择项目根目录")
+        if !p.project.isEmpty { panel.directoryURL = root }
+        if panel.runModal() == .OK, let url = panel.url, p.project != url.path {
+            if discovery?.sessions.contains(where: { $0.id == p.claude }) == true { p.claude = "" }
+            if discovery?.codex.contains(where: { $0.id == codexID }) == true { p.codex = "" }
+            p.project = url.path
+        }
+    }
+
+    func chooseDocument() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true; panel.canChooseDirectories = false
+        panel.allowedContentTypes = [UTType(filenameExtension: "md") ?? .plainText, .plainText]
+        panel.prompt = L("选择任务文档")
+        panel.message = L("选择指挥者每轮要阅读和更新的任务文档")
+        panel.directoryURL = p.document.isEmpty ? (p.project.isEmpty ? nil : root)
+                                                : URL(fileURLWithPath: p.document).deletingLastPathComponent()
+        if panel.runModal() == .OK, let url = panel.url { p.document = url.path }
     }
 
     // MARK: Setup
@@ -330,13 +385,17 @@ struct Workspace: View {
     var setupPage: some View {
         Form {
             Section {
+                LabeledContent("名称") {
+                    TextField("名称", text: $p.name, prompt: Text(store.title(Pair(id: p.id, project: p.project, codex: p.codex))))
+                        .labelsHidden()
+                }
                 LabeledContent("项目目录") {
                     HStack {
-                        Text(project.isEmpty ? L("未选择") : project)
+                        Text(p.project.isEmpty ? L("未选择") : p.project)
                             .lineLimit(1).truncationMode(.middle)
-                            .foregroundStyle(project.isEmpty ? .secondary : .primary)
+                            .foregroundStyle(p.project.isEmpty ? .secondary : .primary)
                             .textSelection(.enabled)
-                        Button(project.isEmpty ? L("选择…") : L("更改…"), action: choose)
+                        Button(p.project.isEmpty ? L("选择…") : L("更改…"), action: choose)
                     }
                 }
                 LabeledContent("任务文档") {
@@ -344,82 +403,96 @@ struct Workspace: View {
                         Text(documentLabel)
                             .font(.system(.callout, design: .monospaced))
                             .lineLimit(1).truncationMode(.middle)
-                            .foregroundStyle(document.isEmpty ? .secondary : .primary)
+                            .foregroundStyle(p.document.isEmpty ? .secondary : .primary)
                             .textSelection(.enabled)
-                            .help(document)
-                        Button(document.isEmpty ? L("选择…") : L("更改…"), action: chooseDocument)
+                            .help(p.document)
+                        Button(p.document.isEmpty ? L("选择…") : L("更改…"), action: chooseDocument)
                     }
                 }
             } header: {
-                Text("项目")
+                Text("配对信息")
             } footer: {
-                Text("任务文档是指挥者每轮阅读和更新的 Markdown 文件，可以放在项目里的任何位置。")
+                Text("任务文档是指挥者每轮阅读和更新的 Markdown 文件，可以放在项目里的任何位置。名称留空时使用 Codex 会话的标题。")
                     .font(.caption).foregroundStyle(.secondary)
             }
 
             Section {
                 LabeledContent("Codex 会话") {
-                    TextField("Codex 会话", text: $codex, prompt: Text("粘贴会话 ID 或链接"))
-                        .labelsHidden().font(.system(.body, design: .monospaced))
+                    HStack {
+                        TextField("Codex 会话", text: $p.codex, prompt: Text("粘贴会话 ID 或链接"))
+                            .labelsHidden().font(.system(.body, design: .monospaced))
+                        if let list = discovery?.codex, !list.isEmpty {
+                            Menu {
+                                ForEach(list) { c in
+                                    Button(c.label) { p.codex = c.id }
+                                }
+                            } label: {
+                                Text(list.first(where: { $0.id == codexID })?.title ?? L("本项目会话"))
+                            }
+                            .frame(maxWidth: 190)
+                        }
+                    }
                 }
                 LabeledContent("Claude Code 会话") {
                     HStack {
-                        TextField("Claude Code 会话", text: $claude, prompt: Text("UUID 或 local_ 标识"))
+                        TextField("Claude Code 会话", text: $p.claude, prompt: Text("UUID 或 local_ 标识"))
                             .labelsHidden().font(.system(.body, design: .monospaced))
-                        if let list = ctl.discovery?.sessions, !list.isEmpty {
+                        if let list = discovery?.sessions, !list.isEmpty {
                             Menu {
                                 ForEach(list) { s in
                                     Button(s.label + " · " + String(s.id.prefix(8))) {
-                                        claude = s.id
-                                        ctl.checkedPair = ""
-                                        if let d = ctl.discovery { selectSession(d) }
+                                        p.claude = s.id
+                                        run.checkedPair = ""
+                                        if let d = discovery { selectSession(d) }
                                     }
                                 }
                             } label: {
-                                Text(list.first(where: { $0.id == claude })?.title ?? L("本项目会话"))
+                                Text(list.first(where: { $0.id == p.claude })?.title ?? L("本项目会话"))
                             }
-                            .fixedSize()
+                            .frame(maxWidth: 190)
                         }
                     }
                 }
                 LabeledContent(LocalizedStringKey("Claude Code")) {
                     HStack(spacing: 8) {
-                        Label(accountText, systemImage: ctl.discovery?.loggedIn == true ? "checkmark.circle.fill" : "person.crop.circle")
-                            .foregroundStyle(ctl.discovery?.loggedIn == true ? .green : .secondary)
+                        Label(accountText, systemImage: discovery?.loggedIn == true ? "checkmark.circle.fill" : "person.crop.circle")
+                            .foregroundStyle(discovery?.loggedIn == true ? .green : .secondary)
                             .fixedSize()
-                        Button("刷新") { ctl.discover(project) }.disabled(project.isEmpty)
-                        if ctl.discovery?.loggedIn == false { Button("登录…") { action("login") } }
-                        Button("新建会话…") { ctl.showCreate = true }.disabled(!configured)
+                        Button("刷新") { store.discover(p.project) }.disabled(p.project.isEmpty)
+                        if discovery?.loggedIn == false { Button("登录…") { action("login") } }
+                        Button("新建会话…") { store.showCreate = true }.disabled(!configured)
                     }
                 }
             } header: {
                 Text("会话")
             } footer: {
-                Text("从 Codex 会话菜单复制 ID 或链接。Claude Code 会话可以从本项目的会话里选，也可以粘贴桌面 Code 的 local_ 标识。")
+                Text(discovery?.codexError.isEmpty == false
+                     ? L("读不到本项目的 Codex 会话列表，可以直接粘贴 ID 或链接：") + (discovery?.codexError ?? "")
+                     : L("两边都可以从本项目的会话里选，也可以粘贴 Codex 会话的 ID 或链接、Claude Code 会话的 UUID 或桌面 Code 的 local_ 标识。"))
                     .font(.caption).foregroundStyle(.secondary)
             }
 
             Section {
-                Picker("接力方式", selection: $relayMode) {
+                Picker("接力方式", selection: $p.relayMode) {
                     Text("原会话接力").tag("live")
                     Text("App 驱动").tag("app")
                 }
                 .pickerStyle(.segmented)
             } footer: {
-                Text(relayMode == "live"
+                Text(p.relayMode == "live"
                      ? L("推荐。审查会话在 Claude 桌面窗口里调用 send_to_codex 派单，并在后台收取回执，全程都在同一个对话里。")
                      : L("由本 App 通过命令行续接 Claude 会话完成审查。审查轮次不会显示在桌面窗口里，可在「对话」页查看。"))
                     .font(.caption).foregroundStyle(.secondary)
             }
 
-            if relayMode == "live" {
+            if p.relayMode == "live" {
                 Section {
-                    Stepper("单次接力上限：\(limit) 轮", value: $limit, in: 1...100)
+                    Stepper("单次接力上限：\(p.limit) 轮", value: $p.limit, in: 1...100)
                     LabeledContent("状态") {
-                        if ctl.liveEnabled {
-                            Label(ctl.livePaused ? L("派单已暂停") : L("已启用，等待审查会话派单"),
-                                  systemImage: ctl.livePaused ? "pause.circle.fill" : "checkmark.circle.fill")
-                                .foregroundStyle(ctl.livePaused ? .orange : .green)
+                        if run.liveEnabled {
+                            Label(run.livePaused ? L("派单已暂停") : L("已启用，等待审查会话派单"),
+                                  systemImage: run.livePaused ? "pause.circle.fill" : "checkmark.circle.fill")
+                                .foregroundStyle(run.livePaused ? .orange : .green)
                         } else {
                             Text("未启用").foregroundStyle(.secondary)
                         }
@@ -427,27 +500,29 @@ struct Workspace: View {
                 } header: {
                     Text("原会话接力")
                 } footer: {
-                    Text("启用时会在本机为这个项目注册 codex_relay 工具，不需要 .mcp.json。注册后在审查会话里开一轮新对话，工具就会出现。")
+                    Text(siblings > 0
+                         ? L("这个项目里还有其他配对。codex_relay 按调用它的 Claude Code 会话找到对应的配对，所以每个配对都要选定自己的 Claude Code 会话。")
+                         : L("启用时会在本机为这个项目注册 codex_relay 工具，不需要 .mcp.json。注册后在审查会话里开一轮新对话，工具就会出现。"))
                         .font(.caption).foregroundStyle(.secondary)
                 }
             } else {
                 Section {
-                    Picker("指挥者", selection: $manager) {
+                    Picker("指挥者", selection: $p.manager) {
                         Text(verbatim: "Claude").tag("claude")
                         Text(verbatim: "Codex").tag("codex")
                     }
                     .pickerStyle(.segmented)
-                    LabeledContent("执行者", value: manager == "claude" ? L("Codex · MCP 派单") : "Claude Code")
-                    Stepper("单次执行上限：\(limit) 轮", value: $limit, in: 1...100)
-                    Picker("本次起点", selection: $mode) {
+                    LabeledContent("执行者", value: p.manager == "claude" ? L("Codex · MCP 派单") : "Claude Code")
+                    Stepper("单次执行上限：\(p.limit) 轮", value: $p.limit, in: 1...100)
+                    Picker("本次起点", selection: $p.mode) {
                         Text("最新执行回执").tag("latest")
                         Text("从目标开始").tag("goal")
                         Text("继续上次").tag("resume")
                     }
                     .pickerStyle(.segmented)
-                    if mode != "resume" {
-                        TextField(mode == "goal" ? L("目标") : L("补充说明"), text: $goal,
-                                  prompt: Text(mode == "goal" ? L("交给指挥者的目标") : L("可选")), axis: .vertical)
+                    if p.mode != "resume" {
+                        TextField(p.mode == "goal" ? L("目标") : L("补充说明"), text: $p.goal,
+                                  prompt: Text(p.mode == "goal" ? L("交给指挥者的目标") : L("可选")), axis: .vertical)
                             .lineLimit(2...6)
                     }
                 } header: {
@@ -456,31 +531,31 @@ struct Workspace: View {
             }
         }
         .formStyle(.grouped)
-        .disabled(ctl.busy)
+        .disabled(run.busy)
     }
 
     // MARK: Chat
 
     var liveTitle: String {
-        let who = ctl.liveRole == "claude" ? "Claude" : "Codex"
-        return String(format: ctl.stage == "review" ? L("%@ 正在审查…") : L("%@ 正在执行…"), who)
+        let who = run.liveRole == "claude" ? "Claude" : "Codex"
+        return String(format: run.stage == "review" ? L("%@ 正在审查…") : L("%@ 正在执行…"), who)
     }
 
     var chatPage: some View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 14) {
-                    ForEach(Array(ctl.chat.enumerated()), id: \.element.id) { index, m in
-                        if index == 0 || ctl.chat[index - 1].round != m.round {
+                    ForEach(Array(run.chat.enumerated()), id: \.element.id) { index, m in
+                        if index == 0 || run.chat[index - 1].round != m.round {
                             RoundDivider(round: m.round)
                         }
                         MessageCard(role: m.role, title: m.title, text: m.text, path: m.path,
-                                    expanded: ctl.expanded.contains(m.id)) {
-                            if ctl.expanded.contains(m.id) { ctl.expanded.remove(m.id) } else { ctl.expanded.insert(m.id) }
+                                    expanded: run.expanded.contains(m.id)) {
+                            if run.expanded.contains(m.id) { run.expanded.remove(m.id) } else { run.expanded.insert(m.id) }
                         }
                     }
-                    if ctl.busy && !ctl.liveText.isEmpty {
-                        MessageCard(role: "live-" + ctl.liveRole, title: liveTitle, text: ctl.liveText, path: "", live: true)
+                    if run.busy && !run.liveText.isEmpty {
+                        MessageCard(role: "live-" + run.liveRole, title: liveTitle, text: run.liveText, path: "", live: true)
                     }
                     Color.clear.frame(height: 1).id("bottom")
                 }
@@ -489,7 +564,7 @@ struct Workspace: View {
                 .frame(maxWidth: .infinity)
             }
             .overlay {
-                if ctl.chat.isEmpty && ctl.liveText.isEmpty {
+                if run.chat.isEmpty && run.liveText.isEmpty {
                     ContentUnavailableView {
                         Label("还没有对话", systemImage: "bubble.left.and.bubble.right")
                     } description: {
@@ -498,8 +573,8 @@ struct Workspace: View {
                 }
             }
             // Demo screenshots start at the top: a window snapshot cannot show the toolbar's blur.
-            .onChange(of: ctl.chat.count) { _, _ in if !demoMode { proxy.scrollTo("bottom", anchor: .bottom) } }
-            .onChange(of: ctl.liveText) { _, _ in proxy.scrollTo("bottom", anchor: .bottom) }
+            .onChange(of: run.chat.count) { _, _ in if !demoMode { proxy.scrollTo("bottom", anchor: .bottom) } }
+            .onChange(of: run.liveText) { _, _ in proxy.scrollTo("bottom", anchor: .bottom) }
             .onAppear { if !demoMode { proxy.scrollTo("bottom", anchor: .bottom) } }
         }
     }
@@ -507,7 +582,7 @@ struct Workspace: View {
     // MARK: Log
 
     var logPage: some View {
-        List(ctl.entries.reversed()) { e in
+        List(run.entries.reversed()) { e in
             HStack(alignment: .firstTextBaseline, spacing: 14) {
                 Text(e.time, format: .dateTime.hour().minute().second())
                     .font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary)
@@ -518,9 +593,9 @@ struct Workspace: View {
         }
         .listStyle(.inset)
         .overlay {
-            if ctl.entries.isEmpty {
+            if run.entries.isEmpty {
                 ContentUnavailableView("暂无记录", systemImage: "list.bullet.rectangle",
-                                       description: Text("本次打开 App 以来的连接、交接和错误会记录在这里。"))
+                                       description: Text("本次打开 App 以来这个配对的连接、交接和错误会记录在这里。"))
             }
         }
     }
@@ -528,12 +603,12 @@ struct Workspace: View {
     // MARK: Bottom bar
 
     var noteBanner: some View {
-        let tone = ctl.tone == .active ? Tone.neutral : ctl.tone
+        let tone = run.tone == .active ? Tone.neutral : run.tone
         return HStack(alignment: .top, spacing: 10) {
             Image(systemName: tone.symbol).foregroundStyle(tone == .neutral ? accent : tone.color)
-            Text(ctl.note).font(.callout).textSelection(.enabled)
+            Text(run.note).font(.callout).textSelection(.enabled)
                 .lineLimit(4).frame(maxWidth: .infinity, alignment: .leading)
-            Button { ctl.note = "" } label: { Image(systemName: "xmark") }
+            Button { run.note = "" } label: { Image(systemName: "xmark") }
                 .buttonStyle(.borderless).foregroundStyle(.secondary).help("关闭")
         }
         .padding(12)
@@ -544,8 +619,8 @@ struct Workspace: View {
     }
 
     var cycleText: String {
-        if ctl.busy && ctl.round > 0 { return String(format: L("第 %lld 轮"), ctl.round) }
-        return relayMode == "live" ? L("审查会话派单 → Codex 执行 → 回执唤醒审查会话") : L("审查 → 执行 → 回执")
+        if run.busy && run.round > 0 { return String(format: L("第 %lld 轮"), run.round) }
+        return p.relayMode == "live" ? L("审查会话派单 → Codex 执行 → 回执唤醒审查会话") : L("审查 → 执行 → 回执")
     }
 
     var actionBar: some View {
@@ -553,27 +628,27 @@ struct Workspace: View {
             Label(cycleText, systemImage: "arrow.triangle.2.circlepath")
                 .font(.callout).foregroundStyle(.secondary).lineLimit(1)
             Spacer()
-            if ctl.busy {
-                Button(ctl.pausedRequested ? L("正在暂停") : (ctl.stage == "waiting" ? L("暂停等待") : L("本轮后暂停")),
-                       systemImage: "pause.fill") { ctl.pause() }
-                    .disabled(ctl.pausedRequested || ctl.pauseFile.isEmpty)
-            } else if relayMode == "live" {
-                if ctl.liveEnabled {
-                    Button(ctl.livePaused ? L("恢复派单") : L("暂停派单"),
-                           systemImage: ctl.livePaused ? "play.fill" : "pause.fill") { ctl.setLivePause(project, !ctl.livePaused) }
-                    if ctl.tab != "chat" {
-                        Button("查看对话", systemImage: "bubble.left.and.bubble.right") { ctl.tab = "chat"; ctl.refreshLive(project) }
+            if run.busy {
+                Button(run.pausedRequested ? L("正在暂停") : (run.stage == "waiting" ? L("暂停等待") : L("本轮后暂停")),
+                       systemImage: "pause.fill") { run.pause() }
+                    .disabled(run.pausedRequested || run.pauseFile.isEmpty)
+            } else if p.relayMode == "live" {
+                if run.liveEnabled {
+                    Button(run.livePaused ? L("恢复派单") : L("暂停派单"),
+                           systemImage: run.livePaused ? "play.fill" : "pause.fill") { run.setLivePause(p, !run.livePaused) }
+                    if store.tab != "chat" {
+                        Button("查看对话", systemImage: "bubble.left.and.bubble.right") { store.tab = "chat"; run.refreshLive(p) }
                     }
                 }
-                Button(ctl.liveEnabled ? L("更新绑定") : L("启用原会话接力"), systemImage: "link") { action("bind") }
+                Button(run.liveEnabled ? L("更新绑定") : L("启用原会话接力"), systemImage: "link") { action("bind") }
                     .buttonStyle(.borderedProminent)
-                    .disabled(codex.isEmpty || !configured)
+                    .disabled(p.codex.isEmpty || !configured)
             } else {
-                if ctl.desktopBlocked {
+                if run.desktopBlocked {
                     Button("仍然继续") { action("start", force: true) }
                         .help("忽略桌面窗口刚才的活动，从保存的交接点继续")
                 }
-                Button("检查连接") { action("check") }.disabled(codex.isEmpty || claude.isEmpty || !configured)
+                Button("检查连接") { action("check") }.disabled(p.codex.isEmpty || p.claude.isEmpty || !configured)
                 Button("开始接力", systemImage: "play.fill") { action("start") }
                     .buttonStyle(.borderedProminent).disabled(!ready)
             }
@@ -586,68 +661,54 @@ struct Workspace: View {
 
     // MARK: Body
 
-    var title: String { L(["setup": "设置", "chat": "对话"][ctl.tab] ?? "运行记录") }
+    var title: String { L(["setup": "设置", "chat": "对话"][store.tab] ?? "运行记录") }
 
-    var detail: some View {
+    var body: some View {
         VStack(spacing: 0) {
             Group {
-                switch ctl.tab {
+                switch store.tab {
                 case "chat": chatPage
                 case "log": logPage
                 default: setupPage
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            if !ctl.note.isEmpty { noteBanner }
+            if !run.note.isEmpty { noteBanner }
             actionBar
         }
-        .animation(.snappy, value: ctl.note.isEmpty)
+        .animation(.snappy, value: run.note.isEmpty)
         .navigationTitle(title)
-        .navigationSubtitle(project.isEmpty ? L("未选择项目") : root.lastPathComponent)
+        .navigationSubtitle(store.title(p))
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
-                if ctl.tab == "chat" {
-                    Button("最新摘要", systemImage: "doc.text") { NSWorkspace.shared.open(URL(fileURLWithPath: ctl.digestPath)) }
+                if store.tab == "chat" {
+                    Button("最新摘要", systemImage: "doc.text") { NSWorkspace.shared.open(URL(fileURLWithPath: run.digestPath)) }
                         .help("打开 LATEST.md")
-                        .disabled(ctl.digestPath.isEmpty || !FileManager.default.fileExists(atPath: ctl.digestPath))
+                        .disabled(run.digestPath.isEmpty || !FileManager.default.fileExists(atPath: run.digestPath))
                 }
-                if ctl.tab != "setup" {
-                    Button("运行目录", systemImage: "folder") { NSWorkspace.shared.open(URL(fileURLWithPath: ctl.folder)) }
+                if store.tab != "setup" {
+                    Button("运行目录", systemImage: "folder") { NSWorkspace.shared.open(URL(fileURLWithPath: run.folder)) }
                         .help("在 Finder 中打开本次运行的完整记录")
-                        .disabled(ctl.folder.isEmpty)
+                        .disabled(run.folder.isEmpty)
                 }
             }
             ToolbarItem(placement: .status) {
-                StatusPill(text: L(ctl.status), tone: ctl.tone)
+                StatusPill(text: L(run.status), tone: run.tone)
             }
         }
-    }
-
-    var body: some View {
-        NavigationSplitView {
-            sidebar
-        } detail: {
-            detail
-        }
-        .tint(accent)
-        .frame(minWidth: 900, minHeight: 640)
         .onAppear {
-            if demoMode { Demo.seed(self) }
-            ctl.discover(project); ctl.refreshLive(project)
+            store.discover(p.project); run.refreshLive(p)
+            if let d = discovery { selectSession(d) }
         }
-        .onReceive(Timer.publish(every: 4, on: .main, in: .common).autoconnect()) { _ in
-            if ctl.tab == "chat" && !ctl.busy { ctl.refreshLive(project) }
-        }
-        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in ctl.discover(project) }
-        .onChange(of: project) { _, _ in ctl.checkedPair = ""; ctl.discover(project); ctl.refreshLive(project) }
-        .onChange(of: [codex, claude, project, document]) { _, _ in
-            if !ctl.busy && !demoMode && ctl.checkedPair != [project, codex, claude].joined(separator: "|") {
-                ctl.checkedPair = ""; ctl.status = ready ? "等待检查" : "等待选择会话"; ctl.note = ""
+        .onChange(of: p.project) { _, _ in run.checkedPair = ""; store.discover(p.project); run.refreshLive(p) }
+        .onChange(of: [p.codex, p.claude, p.project, p.document]) { _, _ in
+            if !run.busy && !demoMode && run.checkedPair != [p.project, p.codex, p.claude].joined(separator: "|") {
+                run.checkedPair = ""; run.status = ready ? "等待检查" : "等待选择会话"; run.note = ""
             }
         }
-        .onReceive(ctl.$discovery.compactMap { $0 }) { d in selectSession(d) }
-        .onChange(of: ctl.createdID) { _, value in if !value.isEmpty { claude = value } }
-        .alert("新建本地 Claude Code 会话？", isPresented: $ctl.showCreate) {
+        .onChange(of: discovery) { _, d in if let d { selectSession(d) } }
+        .onChange(of: run.createdID) { _, value in if !value.isEmpty { p.claude = value } }
+        .alert("新建本地 Claude Code 会话？", isPresented: $store.showCreate) {
             Button("取消", role: .cancel) {}
             Button("打开终端") { action("create") }
         } message: {
@@ -656,11 +717,49 @@ struct Workspace: View {
     }
 }
 
+// MARK: - Workspace
+
+struct Workspace: View {
+    @ObservedObject var store = Store.shared
+
+    var body: some View {
+        NavigationSplitView {
+            Sidebar(store: store)
+        } detail: {
+            PairPage(store: store, run: store.run(store.selected), p: store.binding(store.selected))
+                .id(store.selected)
+        }
+        .tint(accent)
+        .frame(minWidth: 940, minHeight: 640)
+        .onAppear {
+            if demoMode { Demo.seed(store) }
+            for p in store.pairs { store.run(p.id).refreshFlags(p) }
+        }
+        .onReceive(Timer.publish(every: 4, on: .main, in: .common).autoconnect()) { _ in
+            for p in store.pairs {
+                let run = store.run(p.id)
+                if p.id == store.selected && store.tab == "chat" && !run.busy { run.refreshLive(p) } else { run.refreshFlags(p) }
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            store.discover(store.current.project)
+        }
+        .alert(Text(String(format: L("删除配对「%@」？"), store.deleting.map(store.title) ?? "")),
+               isPresented: Binding(get: { store.deleting != nil }, set: { if !$0 { store.deleting = nil } }),
+               presenting: store.deleting) { pair in
+            Button("删除", role: .destructive) { store.delete(pair) }
+            Button("取消", role: .cancel) {}
+        } message: { _ in
+            Text("会关闭它的原会话接力绑定。运行记录保留在项目的 .session-relay 文件夹里。")
+        }
+    }
+}
+
 @main struct SessionRelayApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
     var body: some Scene {
         Window("Session Relay", id: "main") { Workspace() }
-            .defaultSize(width: 1080, height: 760)
+            .defaultSize(width: 1120, height: 760)
             .windowToolbarStyle(.unified)
     }
 }
