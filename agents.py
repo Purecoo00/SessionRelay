@@ -712,7 +712,11 @@ def codex_threads(root, limit=40):
     root = Path(root).expanduser().resolve()
     codex = Codex(None, root)
     try:
-        rows = codex.rpc("thread/list", {"cwd":str(root), "limit":limit, "sortKey":"updated_at"}).get("data", [])
+        params = {"cwd":str(root), "limit":limit, "sortKey":"updated_at"}
+        if WINDOWS:
+            # An unfiltered list only includes interactive sessions, omitting codex exec.
+            params["sourceKinds"] = ["cli", "vscode", "appServer", "exec"]
+        rows = codex.rpc("thread/list", params).get("data", [])
     finally:
         codex.close()
     chats = []

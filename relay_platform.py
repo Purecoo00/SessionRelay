@@ -38,6 +38,29 @@ def script_command(script, *args):
     return [sys.executable, "-B", str(script), *args]
 
 
+def windows_git_bash():
+    configured = os.environ.get("CLAUDE_CODE_GIT_BASH_PATH")
+    if configured:
+        if Path(configured).is_file():
+            return Path(configured)
+        raise FileNotFoundError(f"CLAUDE_CODE_GIT_BASH_PATH does not point to a file: {configured}")
+
+    # A bundled git.exe can precede a full Git for Windows installation on PATH.
+    roots = []
+    for directory in map(Path, os.get_exec_path()):
+        if (directory / "git.exe").is_file():
+            root = directory.parent
+            roots.append(root.parent if root.name.lower() in ("mingw32", "mingw64", "ucrt64") else root)
+    for variable, folder in (("ProgramFiles", "Git"), ("ProgramFiles(x86)", "Git"), ("LOCALAPPDATA", "Programs/Git")):
+        if os.environ.get(variable):
+            roots.append(Path(os.environ[variable]) / folder)
+    for root in roots:
+        bash = root / "bin/bash.exe"
+        if bash.is_file():
+            return bash
+    raise FileNotFoundError("Git Bash not found. Set CLAUDE_CODE_GIT_BASH_PATH to Git for Windows' bash.exe.")
+
+
 def git_bash_command(argv, path_args):
     # MSYS can rewrite arguments paths when spawning Win32 programs. Supply them ourselves.
     args = [PureWindowsPath(arg).as_posix() if i in path_args else arg

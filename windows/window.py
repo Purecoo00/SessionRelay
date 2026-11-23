@@ -669,7 +669,7 @@ class Window(QMainWindow):
             ("任务文档", self.file_choice(document, self.choose_document, mono=True, tip=pair.document)),
         ], self.L("任务文档是指挥者每轮阅读和更新的 Markdown 文件，可以放在项目里的任何位置。名称留空时使用 Codex 会话的标题。"))
 
-        account = self.store.discovery_error.get(pair.project)
+        account = self.store.discovery_error.get(pair.project) or discovery.get("claudeError")
         if not account:
             if not pair.project:
                 account = self.L("先选择项目目录")

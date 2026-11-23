@@ -661,8 +661,16 @@ def main():
             chats, problem = codex_threads(config["project"]), ""
         except Exception as exc:  # The Claude list is still useful without Codex.
             chats, problem = [], str(exc)
-        emit("discovery", loggedIn=claude_auth(), sessions=project_sessions(config["project"]),
-             codex=chats, codexError=problem)
+        account = {}
+        try:
+            logged_in = claude_auth()
+        except (OSError, RuntimeError, subprocess.SubprocessError, ValueError) as exc:
+            if not WINDOWS:
+                raise
+            logged_in = None
+            account["claudeError"] = str(exc)
+        emit("discovery", loggedIn=logged_in, sessions=project_sessions(config["project"]),
+             codex=chats, codexError=problem, **account)
         return
     if config.get("command") in ("create", "login"):
         return bootstrap(config["project"], config["command"] == "login", config.get("document"))

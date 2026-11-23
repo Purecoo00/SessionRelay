@@ -4,7 +4,6 @@ import json
 import os
 import re
 import shlex
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -64,6 +63,10 @@ if sys.argv[1]=="app-server":
             assert p["threadId"]==sid; result={}
         elif name=="thread/list":
             assert p["cwd"]==str(root)
+            if os.name=="nt":
+                assert set(p.get("sourceKinds", []))=={"cli","vscode","appServer","exec"}
+            else:
+                assert "sourceKinds" not in p
             result={"data":[{"id":"a","name":"Main","cwd":str(root),"updatedAt":5},
                             {"id":"b","name":None,"preview":"hello   world","cwd":str(root),"updatedAt":3},
                             {"id":"c","parentThreadId":"a","cwd":str(root),"updatedAt":4},
@@ -513,11 +516,7 @@ class LiveRelayTest(unittest.TestCase):
         command = text.strip().splitlines()[-2]
         if os.name == "nt":
             self.assertTrue(command.startswith("MSYS2_ARG_CONV_EXCL="))
-            # Git for Windows on the Windows runner exercises the actual Bash command.
-            git = shutil.which("git")
-            exec_path = subprocess.check_output([git, "--exec-path"], encoding="utf-8").strip()
-            bash = Path(exec_path).parents[2] / "bin" / "bash.exe"
-            args = [str(bash), "-c", command]
+            args = [str(relay_platform.windows_git_bash()), "-c", command]
         else:
             args = shlex.split(command)
             self.assertEqual(args[0], sys.executable)
@@ -599,6 +598,18 @@ class LiveRelayTest(unittest.TestCase):
         chats = codex_threads(self.root)
         self.assertEqual([(c["id"], c["title"]) for c in chats], [("a", "Main"), ("b", "hello world")])
 
+    @unittest.skipUnless(relay_platform.WINDOWS, "Windows discovery")
+    def test_discovery_keeps_codex_chats_when_claude_is_missing(self):
+        result = subprocess.run([sys.executable, str(HERE / "relay.py")],
+                                input=json.dumps(dict(command="discover", project=str(self.root))),
+                                env=dict(os.environ, SESSION_RELAY_CLAUDE_BIN=str(self.root / "missing.exe")),
+                                capture_output=True, encoding="utf-8", check=True)
+        event = json.loads(result.stdout)
+        self.assertEqual(event["kind"], "discovery")
+        self.assertIsNone(event["loggedIn"])
+        self.assertTrue(event["claudeError"])
+        self.assertEqual([chat["id"] for chat in event["codex"]], ["a", "b"])
+
     def test_rebinding_reuses_an_unused_run(self):
         first = live.bind(self.root, self.codex, limit=3, check=False, document=DOC)
         again = live.bind(self.root, self.codex, limit=10, check=False, document=DOC)
@@ -631,11 +642,12 @@ class LiveRelayTest(unittest.TestCase):
         command = [sys.executable, "-c",
                    "from relay import session_locks; from contextlib import ExitStack; "
                    "stack = ExitStack(); stack.enter_context(session_locks(['shared'])); stack.close()"]
+        env = dict(os.environ, PYTHONIOENCODING="utf-8") if relay_platform.WINDOWS else None
         with session_locks(["shared", "shared"]):
-            conflict = subprocess.run(command, cwd=HERE, capture_output=True, encoding="utf-8")
+            conflict = subprocess.run(command, cwd=HERE, env=env, capture_output=True, encoding="utf-8")
             self.assertNotEqual(conflict.returncode, 0)
             self.assertIn("Session Relay", conflict.stderr)
-        released = subprocess.run(command, cwd=HERE, capture_output=True, encoding="utf-8")
+        released = subprocess.run(command, cwd=HERE, env=env, capture_output=True, encoding="utf-8")
         self.assertEqual(released.returncode, 0, released.stderr)
 
     def test_git_bash_preserves_windows_paths_with_spaces_and_apostrophes(self):
