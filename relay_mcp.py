@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 from i18n import t
+from relay_platform import WINDOWS, script_command
 
 SERVER = "session_relay"
 PREFIX = "mcp__" + SERVER + "__"
@@ -117,8 +118,8 @@ class ReviewHandoff:
         self.accepted = {}
 
     def config(self):
-        server = {"command": sys.executable, "args": ["-B", str(Path(__file__).resolve())],
-                  "env": {"SESSION_RELAY_REVIEW_TOKEN": self.token}}
+        command, *args = script_command(Path(__file__).resolve())
+        server = {"command": command, "args": args, "env": {"SESSION_RELAY_REVIEW_TOKEN": self.token}}
         return json.dumps({"mcpServers": {SERVER: server}})
 
     def observe(self, row, sid):
@@ -186,7 +187,10 @@ def respond(req, token):
     return response
 
 
-if __name__ == "__main__":
+def entrypoint():
+    if WINDOWS:
+        for stream in (sys.stdin, sys.stdout, sys.stderr):
+            stream.reconfigure(encoding="utf-8")
     if "--live" in sys.argv:
         # Persistent project server: python3 relay_mcp.py --live --project <root>
         args = sys.argv[1:]
@@ -207,3 +211,7 @@ if __name__ == "__main__":
                 reply = handler(request)
         if reply is not None:
             print(json.dumps(reply), flush=True)
+
+
+if __name__ == "__main__":
+    entrypoint()

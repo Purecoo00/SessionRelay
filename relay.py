@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """One local, checkpointed handoff loop. The native app communicates over stdio."""
+import base64
 import contextlib
 import datetime
-import fcntl
 import hashlib
 import json
 import os
@@ -17,11 +17,20 @@ import uuid
 from pathlib import Path
 
 from agents import (Claude, Codex, claude_auth, claude_env, codex_threads, codex_view, compact, executable, latest_claude,
+                    cli_command, cli_subprocess,
                     project_sessions, resolve_claude_id, session_id, tool_line, transcript)
 from i18n import t
 from relay_mcp import FINISH, PREFIX, SEND, ReviewHandoff
 
-SUPPORT = Path(os.environ.get("SESSION_RELAY_SUPPORT") or Path.home() / "Library/Application Support/Session Relay")
+from relay_platform import WINDOWS, relay_support, replace_record, script_command
+
+if WINDOWS:
+    import errno
+    import msvcrt
+else:
+    import fcntl
+
+SUPPORT = relay_support()
 DIGEST = "LATEST.md"
 GOAL_MARKERS = ("这是本轮开始前的新目标", "A new goal set before this run")
 DESKTOP_QUIET = 300  # Seconds the desktop window must be idle before the relay resumes Claude.
@@ -32,11 +41,20 @@ def emit(kind, message="", **fields):
 
 
 def write(path, data):
-    with tempfile.NamedTemporaryFile(mode="w", dir=path.parent, encoding="utf-8", delete=False) as f:
-        f.write(data)
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(f.name, path)
+    with tempfile.NamedTemporaryFile(mode="w", dir=path.parent, encoding="utf-8", newline="\n", delete=False) as f:
+        temp = Path(f.name)
+        try:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        except BaseException:
+            f.close()
+            temp.unlink(missing_ok=True)
+            raise
+    try:
+        replace_record(temp, path)
+    finally:
+        temp.unlink(missing_ok=True)
 
 
 def fingerprint(path):
@@ -59,7 +77,7 @@ def parse_decision(answer):
 
 
 def review_evidence(receipt):
-    body = receipt.read_text()
+    body = receipt.read_text(encoding="utf-8")
     if len(body.encode()) <= 90000:
         return body
 
@@ -89,7 +107,7 @@ def review_evidence(receipt):
              f"下面是最后一页的内容。\n\n",
              f"The full receipt is split into {len(pages)} files, from {folder / pages[0]} to {folder / pages[-1]}. "
              "Read them page by page with the file tool. Each page is at most 16 KiB and long lines are wrapped. "
-             "The last page follows.\n\n") + page.read_text()
+             "The last page follows.\n\n") + page.read_text(encoding="utf-8")
 
 
 def clip(text, limit, tail=False):
@@ -135,7 +153,7 @@ def conversation(folder):
     executor = "codex" if manager == "claude" else "claude"
     names = {"claude": "Claude", "codex": "Codex"}
     try:
-        state = json.loads((folder / "state.json").read_text())
+        state = json.loads((folder / "state.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return []
     found = [int(m.group(1)) for f in folder.iterdir() if (m := re.match(r"(\d{3})-", f.name))]
@@ -145,34 +163,34 @@ def conversation(folder):
         if text is None:
             if not path.exists():
                 return
-            text = path.read_text(errors="replace")
+            text = path.read_text(encoding="utf-8", errors="replace")
         messages.append(dict(id=f"{n}-{role}", round=n, role=role, title=title,
                              text=clip(text.strip(), 12000, tail), path=str(path)))
 
     for n in range(max(found, default=0) + 1):
         receipt, view = folder / f"{n:03}-receipt.txt", folder / f"{n:03}-execute-view.txt"
         if receipt.exists():
-            if n == 0 and state.get("goal") and receipt.read_text(errors="replace").startswith(GOAL_MARKERS):
+            if n == 0 and state.get("goal") and receipt.read_text(encoding="utf-8", errors="replace").startswith(GOAL_MARKERS):
                 add(0, "receipt", t("起点 · 目标", "Start · Goal"), receipt, state["goal"])
             elif view.exists():
                 add(n, "receipt", t(f"{names[executor]} 执行与回执", f"{names[executor]} run and receipt"), receipt,
-                    view.read_text(errors="replace"))
+                    view.read_text(encoding="utf-8", errors="replace"))
             else:
                 add(n, "receipt", t(f"{names[executor]} 回执", f"{names[executor]} receipt") if n
                     else t(f"{names[executor]} 最新回执", f"Latest {names[executor]} receipt"), receipt,
-                    readable(receipt.read_text(errors="replace")), tail=True)
+                    readable(receipt.read_text(encoding="utf-8", errors="replace")), tail=True)
         review = folder / f"{n:03}-review-view.txt"
         answer = folder / f"{n:03}-decision.txt"
         if review.exists():
-            add(n, "review", t(f"{names[manager]} 审查", f"{names[manager]} review"), answer, review.read_text(errors="replace"))
+            add(n, "review", t(f"{names[manager]} 审查", f"{names[manager]} review"), answer, review.read_text(encoding="utf-8", errors="replace"))
         elif answer.exists():
             add(n, "review", t(f"{names[manager]} 审查", f"{names[manager]} review"), answer)
         decision = None
         try:
             if (folder / f"{n:03}-mcp.json").exists():
-                decision = json.loads((folder / f"{n:03}-mcp.json").read_text())["decision"]
+                decision = json.loads((folder / f"{n:03}-mcp.json").read_text(encoding="utf-8"))["decision"]
             elif answer.exists():
-                decision = parse_decision(answer.read_text())
+                decision = parse_decision(answer.read_text(encoding="utf-8"))
         except (ValueError, KeyError, TypeError):
             decision = None
         prompt = folder / f"{n+1:03}-prompt.txt"
@@ -307,11 +325,20 @@ def session_locks(ids):
     lock_root.mkdir(mode=0o700, parents=True, exist_ok=True)
     with contextlib.ExitStack() as stack:
         for sid in sorted(set(ids)):
-            f = stack.enter_context((lock_root / sid).open("a"))
+            f = stack.enter_context((lock_root / sid).open("a+b"))
             try:
-                fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError:
-                raise RuntimeError(t("这个会话正在被另一个 Session Relay 流程使用。", "Another Session Relay process is using this session."))
+                if WINDOWS:
+                    f.seek(0)
+                    msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
+                    stack.callback(msvcrt.locking, f.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError as exc:
+                contention = exc.errno == errno.EACCES if WINDOWS else isinstance(exc, BlockingIOError)
+                if not contention:
+                    raise
+                raise RuntimeError(t("这个会话正在被另一个 Session Relay 流程使用。",
+                                     "Another Session Relay process is using this session.")) from exc
         yield
 
 
@@ -328,8 +355,8 @@ def run_loop(config, pair, doc, agents, latest, pause, publish=emit):
         if not pointer.exists():
             raise ValueError(t("这对会话还没有保存的交接点。请选择「最新执行回执」或「从目标开始」。",
                                "These sessions have no saved checkpoint. Choose \"Latest receipt\" or \"Start from goal\"."))
-        folder = pair / pointer.read_text()
-        state = json.loads((folder / "state.json").read_text())
+        folder = pair / pointer.read_text(encoding="utf-8")
+        state = json.loads((folder / "state.json").read_text(encoding="utf-8"))
         if state["phase"] == "done":
             raise ValueError(t("上一次 App 驱动的接力已经结束，无法「继续上次」。"
                                "要让原审查会话派单，请切到「原会话接力」；要用 App 驱动，请选「最新执行回执」或「从目标开始」。",
@@ -347,7 +374,7 @@ def run_loop(config, pair, doc, agents, latest, pause, publish=emit):
                 extension = "json" if suffix == "mcp" else "txt"
                 path = folder / f"{state['round']:03}-{suffix}.{extension}"
                 if path.exists():
-                    write(archive / path.name, path.read_text())
+                    write(archive / path.name, path.read_text(encoding="utf-8"))
             write(archive / "state.json", compact(state))
             state.update(phase="review", inflight=False, retry=attempt, priorReview=archive.name)
             write(folder / "state.json", compact(state))
@@ -379,7 +406,7 @@ def run_loop(config, pair, doc, agents, latest, pause, publish=emit):
         write(folder / "state.json", compact(state))
 
     def log(message, **fields):
-        with (folder / "events.jsonl").open("a") as f:
+        with (folder / "events.jsonl").open("a", encoding="utf-8", newline="\n") as f:
             f.write(compact(dict(time=datetime.datetime.now().isoformat(), message=message, **fields)) + "\n")
         publish("log", message, **fields)
 
@@ -497,9 +524,9 @@ def run_loop(config, pair, doc, agents, latest, pause, publish=emit):
             answer_path = folder / f"{n:03}-decision.txt"
             try:
                 if state.get("transport") == "mcp":
-                    d = json.loads((folder / f"{n:03}-mcp.json").read_text())["decision"]
+                    d = json.loads((folder / f"{n:03}-mcp.json").read_text(encoding="utf-8"))["decision"]
                 else:
-                    d = parse_decision(answer_path.read_text())
+                    d = parse_decision(answer_path.read_text(encoding="utf-8"))
             except (ValueError, TypeError) as exc:
                 if state.get("transport") == "mcp":
                     raise RuntimeError(t("MCP 交接记录损坏，请核对运行记录。", "The MCP handoff record is damaged. Check the run folder.")) from exc
@@ -572,21 +599,20 @@ MCP_NAME = "codex_relay"
 
 
 def register_mcp(root, run=subprocess.run):
-    """Register codex_relay for this project on this Mac (Claude Code local scope).
+    """Register codex_relay for this project (Claude Code local scope).
 
     Local scope lives in Claude Code's own settings, not in the project, so nothing
     machine-specific is committed and no approval prompt is needed. The server runs
     from this copy of Session Relay, so rebuilding the app keeps it working.
     """
-    cli = executable("claude")
-    server = ["/usr/bin/python3", "-B", str(Path(__file__).resolve().parent / "relay_mcp.py"),
-              "--live", "--project", str(root)]
-    run([cli, "mcp", "remove", "-s", "local", MCP_NAME], cwd=root, env=claude_env(),
-        capture_output=True, text=True, timeout=30)
-    done = run([cli, "mcp", "add", "-s", "local", MCP_NAME, "--", *server], cwd=root, env=claude_env(),
-               capture_output=True, text=True, timeout=30)
+    cli = cli_command("claude", executable("claude"))
+    server = script_command(Path(__file__).with_name("relay_mcp.py").resolve(), "--live", "--project", str(root))
+    opts = dict(cwd=root, env=claude_env(), capture_output=True, encoding="utf-8", timeout=30, **cli_subprocess())
+    run([*cli, "mcp", "remove", "-s", "local", MCP_NAME], **opts)
+    done = run([*cli, "mcp", "add", "-s", "local", MCP_NAME, "--", *server], **opts)
     if done.returncode:
-        raise RuntimeError(t("无法在本机注册 codex_relay：", "Could not register codex_relay on this Mac: ")
+        raise RuntimeError(t("无法在本机注册 codex_relay：", "Could not register codex_relay on this PC: " if WINDOWS
+                             else "Could not register codex_relay on this Mac: ")
                            + (done.stderr or done.stdout)[-800:])
 
 
@@ -594,19 +620,33 @@ def bootstrap(project, login_only=False, document=None):
     root = project_root(project)
     doc = None if login_only else task_document(root, document)
     sid = str(uuid.uuid4())
-    folder = SUPPORT / "launchers"
-    folder.mkdir(parents=True, exist_ok=True, mode=0o700)
-    cli = shlex.quote(executable("claude"))
-    cmd = folder / f"{sid}.command"
+    cli = executable("claude")
     greeting = t(f"请阅读任务文档 {doc}，了解现状，等我通过 Session Relay 交给你回执或指令。此步骤只阅读。",
                  f"Read the task document {doc} to learn the current state, then wait for receipts or instructions from Session Relay. Only read for now.")
-    command = "#!/bin/zsh\nset -e\ncd -- " + shlex.quote(str(root)) + "\n"
-    command += cli + " auth status >/dev/null 2>&1 || " + cli + " auth login\n"
-    if not login_only:
-        command += "exec " + cli + " --session-id " + sid + " " + shlex.quote(greeting) + "\n"
-    cmd.write_text(command)
-    cmd.chmod(0o700)
-    subprocess.run(["/usr/bin/open","-a","Terminal",str(cmd)], check=True)
+    if WINDOWS:
+        def quote(value):
+            return "'" + value.replace("'", "''") + "'"
+
+        invoke = "& " + " ".join(map(quote, cli_command("claude", cli)))
+        command = invoke + " auth status *> $null\n"
+        command += "if ($LASTEXITCODE -ne 0) { " + invoke + " auth login; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } }\n"
+        if not login_only:
+            command += invoke + " --session-id " + quote(sid) + " " + quote(greeting)
+        script = base64.b64encode(command.encode("utf-16-le")).decode("ascii")
+        subprocess.Popen(["powershell.exe", "-NoProfile", "-EncodedCommand", script], cwd=root,
+                         env=claude_env(), creationflags=subprocess.CREATE_NEW_CONSOLE)
+    else:
+        folder = SUPPORT / "launchers"
+        folder.mkdir(parents=True, exist_ok=True, mode=0o700)
+        cmd = folder / f"{sid}.command"
+        cli = shlex.quote(cli)
+        command = "#!/bin/zsh\nset -e\ncd -- " + shlex.quote(str(root)) + "\n"
+        command += cli + " auth status >/dev/null 2>&1 || " + cli + " auth login\n"
+        if not login_only:
+            command += "exec " + cli + " --session-id " + sid + " " + shlex.quote(greeting) + "\n"
+        cmd.write_text(command, encoding="utf-8")
+        cmd.chmod(0o700)
+        subprocess.run(["/usr/bin/open","-a","Terminal",str(cmd)], check=True)
     if login_only:
         emit("login", t("已打开本地 Code 登录终端。完成后回到 App 检查连接。", "Opened a Terminal to sign in to Claude Code. Come back and check the connection when done."))
     else:
@@ -636,8 +676,9 @@ def main():
         emit("bound", t(f"已启用原会话接力，本次最多派出 {limit} 轮，并已在本机为这个项目注册 codex_relay。"
                         "在审查会话里开一轮新对话加载工具，再让 Claude 用 send_to_codex 派单。",
                         f"In-session relay is on with up to {limit} rounds, and codex_relay is registered for this project "
-                        "on this Mac. Start a new conversation in the reviewer session to load the tools, then have Claude "
-                        "dispatch with send_to_codex."))
+                        + ("on this PC. " if WINDOWS else "on this Mac. ")
+                        + "Start a new conversation in the reviewer session to load the tools, then have Claude "
+                          "dispatch with send_to_codex."))
         return
     if config.get("command") == "history":
         folder = Path(config.get("folder", "")).expanduser()
@@ -681,10 +722,15 @@ def main():
             codex.close()
 
 
-if __name__ == "__main__":
+def entrypoint():
     def terminate(sig, frame):
         raise KeyboardInterrupt()
-    signal.signal(signal.SIGTERM, terminate)
+    if WINDOWS:
+        for stream in (sys.stdin, sys.stdout, sys.stderr):
+            stream.reconfigure(encoding="utf-8")
+        signal.signal(signal.SIGBREAK, terminate)
+    else:
+        signal.signal(signal.SIGTERM, terminate)
     if len(sys.argv) > 1:
         from live import cli
         cli(sys.argv[1:])
@@ -696,3 +742,7 @@ if __name__ == "__main__":
     except Exception as exc:
         emit("error", str(exc))
         sys.exit(1)
+
+
+if __name__ == "__main__":
+    entrypoint()

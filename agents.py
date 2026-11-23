@@ -6,33 +6,83 @@ import re
 import time
 import shutil
 import subprocess
+import sys
 import threading
 import uuid
 from pathlib import Path
 from i18n import t
 from relay_mcp import FINISH, PREFIX, SEND
+from relay_platform import WINDOWS, app_support, claude_rule_path, process_group, terminate_tree
 
 BUNDLED = Path("/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex")
-CLAUDE_CACHE = Path.home() / "Library/Application Support/Claude/claude-code"
-DESKTOP = Path.home() / "Library/Application Support/Claude/claude-code-sessions"
+def claude_desktop_home():
+    if WINDOWS:
+        override = os.environ.get("SESSION_RELAY_CLAUDE_DESKTOP_DIR")
+        if override:
+            return Path(override)
+        packaged = Path(os.environ["LOCALAPPDATA"]) / "Packages/Claude_pzs8sxrjxfjjc/LocalCache/Roaming/Claude"
+        if packaged.is_dir():
+            return packaged
+    return app_support() / "Claude"
+
+
+CLAUDE_HOME = claude_desktop_home()
+CLAUDE_CACHE = CLAUDE_HOME / "claude-code"
+DESKTOP = CLAUDE_HOME / "claude-code-sessions"
 RELAY_ENTRY = "sdk-cli"
+
+
+def cli_path():
+    home = str(Path.home() / ".local/bin")
+    extra = [home] if WINDOWS else [home, "/opt/homebrew/bin", "/usr/local/bin"]
+    return os.pathsep.join([os.environ.get("PATH", ""), *extra])
 
 
 def executable(agent):
     override = os.environ.get(f"SESSION_RELAY_{agent.upper()}_BIN")  # Custom installs and test doubles.
     if override:
         return override
-    search = os.environ.get("PATH", "") + ":" + str(Path.home() / ".local/bin") + ":/opt/homebrew/bin:/usr/local/bin"
-    found = shutil.which(agent, path=search)
-    if agent == "codex" and BUNDLED.is_file():
+    found = shutil.which(agent, path=cli_path())
+    if sys.platform == "darwin" and agent == "codex" and BUNDLED.is_file():
         return str(BUNDLED)
     if found:
         return found
     if agent == "claude":
-        builds = list(CLAUDE_CACHE.glob("*/*/claude.app/Contents/MacOS/claude"))
+        pattern = "*/*/claude.exe" if WINDOWS else "*/*/claude.app/Contents/MacOS/claude"
+        builds = list(CLAUDE_CACHE.glob(pattern))
         if builds:
             return str(max(builds, key=lambda p: p.stat().st_mtime))
     raise RuntimeError(t(f"没有找到 {agent} 本地程序。", f"Could not find the local {agent} program."))
+
+
+def cli_command(agent, program):
+    if WINDOWS:
+        path = Path(program)
+        if path.suffix.lower() == ".py" and not getattr(sys, "frozen", False):
+            return [sys.executable, str(path)]
+        if path.suffix.lower() == ".cmd":
+            # Use the published npm entry point directly so cmd.exe cannot reparse JSON or prompts.
+            package = {"codex": "@openai/codex", "claude": "@anthropic-ai/claude-code"}[agent]
+            folder = path.parent / "node_modules" / package
+            manifest = folder / "package.json"
+            if manifest.is_file():
+                entry = json.loads(manifest.read_text(encoding="utf-8"))["bin"][agent]
+                script = folder / entry
+                if script.suffix.lower() == ".exe":
+                    return [str(script)]
+                node = shutil.which("node.exe", path=os.pathsep.join((str(path.parent), cli_path())))
+                if node is None:
+                    raise RuntimeError(t("没有找到 node.exe。", "Could not find node.exe."))
+                return [node, str(script)]
+    return [program]
+
+
+def agent_command(agent, *args):
+    return [*cli_command(agent, executable(agent)), *args]
+
+
+def cli_subprocess():
+    return {"creationflags": subprocess.CREATE_NO_WINDOW} if WINDOWS else {}
 
 
 def session_id(value):
@@ -42,12 +92,13 @@ def session_id(value):
 def claude_env():
     env = os.environ.copy()
     env.pop("CLAUDECODE", None)
-    env["PATH"] = env.get("PATH", "") + ":" + str(Path.home() / ".local/bin") + ":/opt/homebrew/bin:/usr/local/bin"
+    env["PATH"] = cli_path()
     return env
 
 
 def claude_auth():
-    p = subprocess.run([executable("claude"), "auth", "status"], env=claude_env(), capture_output=True, text=True, timeout=20)
+    p = subprocess.run(agent_command("claude", "auth", "status"), env=claude_env(), capture_output=True,
+                       encoding="utf-8", timeout=20, **cli_subprocess())
     try:
         return bool(json.loads(p.stdout)["loggedIn"])
     except (ValueError, KeyError):
@@ -79,7 +130,7 @@ def project_sessions(root, desktop=None):
     pattern = (key if len(key) < 200 else key[:200] + "*") + "/*.jsonl"
     for path in base.glob(pattern):
         try:
-            with path.open() as f:
+            with path.open(encoding="utf-8") as f:
                 for line in f:
                     cwd = json.loads(line).get("cwd")
                     if cwd:
@@ -90,7 +141,7 @@ def project_sessions(root, desktop=None):
             continue
     for path in desktop.glob("*/*/local_*.json"):
         try:
-            row = json.loads(path.read_text())
+            row = json.loads(path.read_text(encoding="utf-8"))
             if not row.get("cwd") or Path(row["cwd"]).resolve() != root:
                 continue
             sid = session_id(row["cliSessionId"])
@@ -197,7 +248,7 @@ def desktop_notes(sid, limit=8000):
     if not path:
         return []
     rows = []
-    with path.open() as f:
+    with path.open(encoding="utf-8") as f:
         for line in f:
             try:
                 rows.append(json.loads(line))
@@ -235,7 +286,7 @@ def desktop_activity(sid, desktop=None):
     """Last time (epoch seconds) the desktop app touched this CLI session, or None."""
     for path in (desktop or DESKTOP).glob("*/*/local_*.json"):
         try:
-            row = json.loads(path.read_text())
+            row = json.loads(path.read_text(encoding="utf-8"))
             if row.get("isArchived") or session_id(row.get("cliSessionId", "")) != sid:
                 continue
             stamps = [row.get(k) for k in ("lastActivityAt", "latestUserFrameAt", "lastTurnEdgeAt")]
@@ -253,7 +304,7 @@ def latest_claude(sid):
         raise RuntimeError(t("未找到这个本地 Claude Code 会话。请核对 /status 中的 ID，或在 App 里新建会话。",
                            "This local Claude Code session was not found. Check the ID in /status or create one in the app."))
     blocks, final, finished = [], "", False
-    with path.open() as f:
+    with path.open(encoding="utf-8") as f:
         for line in f:
             row = json.loads(line)
             if row.get("isSidechain"):
@@ -289,11 +340,11 @@ class Claude:
         return desktop_notes(self.sid)
 
     def run(self, prompt, manager, handoff=None):
-        args = [executable("claude"), "-p", "--resume", self.sid, "--verbose", "--output-format", "stream-json"]
+        args = agent_command("claude", "-p", "--resume", self.sid, "--verbose", "--output-format", "stream-json")
         if manager:
             # Claude's // prefix anchors a permission at the filesystem root,
             # including after a review command changes the working directory.
-            rule_path = "/" + str(self.document.absolute())
+            rule_path = claude_rule_path(self.document.absolute())
             allowed = [f"Edit({rule_path})", f"Write({rule_path})", "Read"]
             if handoff is not None:
                 args.extend(["--mcp-config", handoff.config()])
@@ -302,7 +353,7 @@ class Claude:
         else:
             args.extend(["--permission-mode", "acceptEdits"])
         p = subprocess.Popen(args, cwd=self.root, env=claude_env(), stdin=subprocess.PIPE,
-                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, encoding="utf-8", **process_group())
         errors = []
 
         def feed():
@@ -339,7 +390,10 @@ class Claude:
             for t in threads:
                 t.join()
         except BaseException:
-            p.terminate()
+            if WINDOWS:
+                terminate_tree(p.pid)
+            else:
+                p.terminate()
             p.wait()
             raise
         finally:
@@ -380,9 +434,9 @@ class Codex:
         self.listener = None
         self.started = None  # Called with the turn ID (or queue ID) once Codex accepts a prompt.
         self.events = queue.Queue()
-        self.proc = subprocess.Popen([executable("codex"), "app-server", "--listen", "stdio://"],
+        self.proc = subprocess.Popen(agent_command("codex", "app-server", "--listen", "stdio://"),
                                      cwd=root, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                     stderr=subprocess.DEVNULL, text=True, start_new_session=True)
+                                     stderr=subprocess.DEVNULL, encoding="utf-8", **process_group())
         threading.Thread(target=self._reader, daemon=True).start()
         try:
             self.rpc("initialize", {"clientInfo":{"name":"session_relay","version":"1.0"}})
@@ -412,7 +466,10 @@ class Codex:
 
     def close(self):
         if self.proc.poll() is None:
-            self.proc.terminate()
+            if WINDOWS:
+                terminate_tree(self.proc.pid)
+            else:
+                self.proc.terminate()
             try:
                 self.proc.wait(timeout=4)
             except subprocess.TimeoutExpired:
@@ -573,8 +630,9 @@ class Codex:
                                                 "itemsView":"notLoaded","limit":16})["data"]
 
         baseline = {t["id"] for t in turns()}
-        cmd = [executable("codex"), "queue", "--thread", self.sid, "--message", prompt, "--resume"]
-        result = subprocess.run(cmd, cwd=self.root, capture_output=True, text=True, timeout=30)
+        cmd = agent_command("codex", "queue", "--thread", self.sid, "--message", prompt, "--resume")
+        result = subprocess.run(cmd, cwd=self.root, capture_output=True, encoding="utf-8", timeout=30,
+                                **cli_subprocess())
         match = re.search(r"Queued message ([0-9a-f-]{36})", result.stdout, re.I)
         if result.returncode or not match:
             raise RuntimeError(t("Codex 队列未确认接收。请核对原会话。 ", "The Codex queue did not confirm the message. Check the Codex chat. ")

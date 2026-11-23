@@ -10,7 +10,7 @@
 
 <p align="center"><b>English</b> · <a href="README.zh-CN.md">中文</a></p>
 
-Session Relay is a small macOS app that closes the loop between a **Claude Code** session and a **Codex** chat. Claude reviews the work and writes the next instruction. Codex carries it out. The receipt goes back to Claude for the next review. You no longer copy prompts and outputs between the two windows by hand.
+Session Relay is a desktop app for macOS and Windows that closes the loop between a **Claude Code** session and a **Codex** chat. Claude reviews the work and writes the next instruction. Codex carries it out. The receipt goes back to Claude for the next review. You no longer copy prompts and outputs between the two windows by hand.
 
 > **Unofficial.** Session Relay is an independent community project. It is not affiliated with, endorsed by or supported by Anthropic or OpenAI. Claude and Claude Code are trademarks of Anthropic; Codex is a trademark of OpenAI.
 
@@ -26,7 +26,7 @@ Session Relay is a small macOS app that closes the loop between a **Claude Code*
 - **Many pairs at once.** Keep a pair for each project or each line of work, even several in one project. Each pair has its own Codex chat, reviewer, task document and records.
 - **Safe by default.** A round limit, a pause switch, and a rule that each receipt is collected before the next prompt goes out.
 - **Everything on record.** Prompts, full receipts, reviews and decisions for every round are saved in your project.
-- **Native Mac app.** SwiftUI, light and dark mode, Chinese and English.
+- **Desktop apps.** SwiftUI on macOS and PySide6 on Windows, both with light and dark mode in Chinese and English.
 
 ## How it works
 
@@ -49,14 +49,14 @@ There are two ways to run it.
 | Where you see reviews | The same desktop conversation you already use | The app's **Conversation** page |
 | How it dispatches | Claude calls the `send_to_codex` MCP tool | The app delivers the prompt after each review |
 
-## Requirements
+## macOS requirements
 
 - macOS 14 or later, with the Apple Command Line Tools (`xcode-select --install`)
 - `/usr/bin/python3`, which ships with the Command Line Tools
 - [Claude Code](https://claude.com/claude-code), signed in on this Mac
 - The Codex app or CLI, with an existing chat for your project
 
-## Build
+## Build on macOS
 
 ```sh
 cd /path/to/SessionRelay
@@ -66,11 +66,29 @@ cd /path/to/SessionRelay
 
 The build is signed ad hoc for your own Mac. A copy downloaded from elsewhere is not notarized and Gatekeeper will block it, so build from source.
 
+## Install and run on Windows
+
+Install and sign in to [Claude Code](https://code.claude.com/docs/en/setup) and Codex. The app looks up `claude` and `codex` on your Windows `PATH`. Install Git for Windows so Claude Code can run the in-session wait command with its Bash tool. Use Claude Desktop for reviews in a desktop conversation.
+
+Download the `Session-Relay-Windows-x64` artifact from a successful Windows Actions run, extract the entire folder to a stable location, and open `Session Relay.exe`. The package includes its Python worker. To run from source or build the package yourself, use Python 3.13 in PowerShell from the repository:
+
+```powershell
+py -3.13 -m venv .venv
+.venv\Scripts\python.exe -m pip install -r windows/requirements.txt
+.venv\Scripts\python.exe -m windows.app
+.venv\Scripts\python.exe -m PyInstaller --noconfirm windows/session-relay.spec
+& '.\dist\Session Relay\Session Relay.exe'
+```
+
+Windows settings and session locks live in `%APPDATA%\Session Relay`. Claude Code uses `%USERPROFILE%\.claude` or `CLAUDE_CONFIG_DIR`. Desktop metadata is looked up in `%APPDATA%\Claude` or the Claude MSIX package's redirected Roaming directory. Set `SESSION_RELAY_CLAUDE_DESKTOP_DIR` before launching when your Desktop installation uses a different data directory.
+
+To preview the Windows interface on macOS, create `.venv`, install `windows/requirements.txt`, and run the frontend with `--demo --lang en` or `--demo --lang zh`. Add `--snapshot dist/windows-screenshots` to export Settings, Conversation, Activity, a streaming review and a status banner in both themes.
+
 ## Quick start: in-session relay
 
 1. Open Session Relay and select a pair in the sidebar, or click **+** to add one. Choose its **project folder** and **task document**. The task document can be any Markdown file the lead should read and keep up to date, for example `/path/to/project/docs/task.md`.
 2. Pick the **Codex chat** from the project's chats, or paste its ID or link. Pick the **Claude Code session** that reviews, and set a round limit.
-3. Click **Turn On In-Session Relay**. This binds the Codex chat and registers the `codex_relay` MCP tools for this project on this Mac (Claude Code's local scope), so there is no `.mcp.json` to write and nothing machine-specific in your repository.
+3. Click **Turn On In-Session Relay**. This binds the Codex chat and registers the `codex_relay` MCP tools for this project on your computer (Claude Code's local scope), so there is no `.mcp.json` to write and nothing machine-specific in your repository.
 4. Start a new conversation in your reviewer session so the tools load.
 5. Ask Claude to review and dispatch with `send_to_codex`. From then on, each round works like this:
    - `send_to_codex` hands the prompt to a background worker, which owns the Codex turn until it ends. The tool returns right away.
@@ -123,7 +141,7 @@ Session Relay talks to tools that do not publish a stable interface for this, so
 - Claude Code's local transcript files and the Claude desktop app's session metadata, used to list sessions, carry desktop messages into reviews and detect desktop activity;
 - Claude Code's `stream-json` output and `claude mcp add`.
 
-It runs on macOS only. A Codex chat or Claude Code session can be in one running relay at a time. It has been tested on macOS 27 with the Codex and Claude Code versions current in late 2026.
+A Codex chat or Claude Code session can be in one running relay at a time. It has been tested on macOS 27 with the Codex and Claude Code versions current in late 2026.
 
 ## Development
 

@@ -19,9 +19,9 @@ import i18n
 from agents import Codex, compact, project_sessions, resolve_claude_id, session_id
 from i18n import t
 from relay import clip, project_root, review_evidence, session_locks, task_document, write
+from relay_platform import WINDOWS, git_bash_command, pid_alive as alive, process_group, script_command
 
 HERE = Path(__file__).resolve().parent
-PYTHON = "/usr/bin/python3"
 ACTIVE = ("dispatching", "running")
 INLINE = 90000  # Receipts up to this size fit one Read call.
 PAIR = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,39}")
@@ -46,7 +46,7 @@ def pairs(root):
     found = {}
     for pair in [""] + ([d.name for d in sorted(base(root).iterdir()) if d.is_dir()] if base(root).is_dir() else []):
         try:
-            found[pair] = json.loads((base(root, pair) / "binding.json").read_text())
+            found[pair] = json.loads((base(root, pair) / "binding.json").read_text(encoding="utf-8"))
         except (OSError, ValueError):
             continue
     return found
@@ -75,16 +75,19 @@ def route(root, env=None):
 
 
 def wait_command(root, pair=""):
-    return " ".join([PYTHON, "-B", shlex.quote(str(HERE / "relay.py")), "wait",
-                     "--project", shlex.quote(str(root))] + (["--pair", pair] if pair else []))
+    command = script_command(HERE / "relay.py", "wait", "--project", str(root))
+    paths = (0, 2, 5) if not getattr(sys, "frozen", False) else (0, 4)
+    if pair:
+        command.extend(("--pair", pair))
+    return git_bash_command(command, paths) if WINDOWS else shlex.join(command)
 
 
 def load(root, pair=""):
     b = base(root, pair)
     try:
-        binding = json.loads((b / "binding.json").read_text())
-        folder = b / (b / "current").read_text().strip()
-        state = json.loads((folder / "state.json").read_text())
+        binding = json.loads((b / "binding.json").read_text(encoding="utf-8"))
+        folder = b / (b / "current").read_text(encoding="utf-8").strip()
+        state = json.loads((folder / "state.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         raise ValueError(t("还没有绑定 Codex 会话。请在 Session Relay 里点「启用原会话接力」。",
                            "No Codex chat is bound yet. Choose \"Turn on in-session relay\" in Session Relay.")) from None
@@ -110,7 +113,7 @@ def save(folder, state):
 
 
 def update_pending(folder, **fields):
-    state = json.loads((folder / "state.json").read_text())
+    state = json.loads((folder / "state.json").read_text(encoding="utf-8"))
     state["pending"].update(fields)
     save(folder, state)
     return state
@@ -192,11 +195,13 @@ def pair_of(root, folder):
 
 def spawn_worker(root, folder, k):
     pair = pair_of(root, folder)
-    log = (folder / f"{k:03}-worker.log").open("w")
-    with log:
-        p = subprocess.Popen([PYTHON, "-B", str(HERE / "relay.py"), "live-exec", "--project", str(root),
-                              "--run", folder.name, "--round", str(k)] + (["--pair", pair] if pair else []),
-                             cwd=root, stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True)
+    command = script_command(HERE / "relay.py", "live-exec", "--project", str(root),
+                             "--run", folder.name, "--round", str(k))
+    if pair:
+        command.extend(("--pair", pair))
+    with (folder / f"{k:03}-worker.log").open("w") as log:
+        p = subprocess.Popen(command, cwd=root, stdin=subprocess.DEVNULL, stdout=log, stderr=log,
+                             **process_group())
     return p.pid
 
 
@@ -223,7 +228,7 @@ def send(root, prompt, spawn=spawn_worker, settle=45, pair=""):
         update_pending(folder, pid=pid)
     deadline = time.monotonic() + settle
     while True:
-        pending = json.loads((folder / "state.json").read_text())["pending"]
+        pending = json.loads((folder / "state.json").read_text(encoding="utf-8"))["pending"]
         if pending["status"] == "failed":
             raise RuntimeError(t("Codex 没有接收这条指令：", "Codex did not accept the prompt: ") + pending.get("error", ""))
         if pending["status"] != "dispatching" or time.monotonic() > deadline:
@@ -253,7 +258,7 @@ def execute(root, run, k, pair=""):
                 view = []
                 codex.listener = view.append
                 codex.started = lambda turn: update_pending(folder, status="running", turn=turn)
-                final, receipt = codex.run((folder / f"{k:03}-prompt.txt").read_text(), False)
+                final, receipt = codex.run((folder / f"{k:03}-prompt.txt").read_text(encoding="utf-8"), False)
             finally:
                 codex.close()
         write(folder / f"{k:03}-receipt.txt", receipt)
@@ -264,16 +269,6 @@ def execute(root, run, k, pair=""):
     except BaseException as exc:
         update_pending(folder, status="failed", error=str(exc)[-1800:] or type(exc).__name__)
         raise
-
-
-def alive(pid):
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
 
 
 def wait(root, poll=3, pair=""):
@@ -287,18 +282,18 @@ def wait(root, poll=3, pair=""):
     while pending["status"] in ACTIVE:
         if pending.get("pid") and not alive(pending["pid"]):
             time.sleep(1)  # The worker writes its final state just before it exits.
-            pending = json.loads((folder / "state.json").read_text())["pending"]
+            pending = json.loads((folder / "state.json").read_text(encoding="utf-8"))["pending"]
             if pending["status"] in ACTIVE:
                 pending = update_pending(folder, status="failed", error=t("执行进程意外退出。", "The worker process exited unexpectedly."))["pending"]
             break
         time.sleep(poll)
-        pending = json.loads((folder / "state.json").read_text())["pending"]
+        pending = json.loads((folder / "state.json").read_text(encoding="utf-8"))["pending"]
     if pending["status"] == "failed":
         log = folder / f"{k:03}-worker.log"
         raise RuntimeError(t(f"Codex 第 {k} 轮没有完成：{pending.get('error', '')}\n请在 Codex 会话里核对，处理后可以重新派单。日志：{log}",
                              f"Codex round {k} did not finish: {pending.get('error', '')}\nCheck the Codex chat; you can dispatch again afterwards. Log: {log}"))
     receipt = folder / f"{k:03}-receipt.txt"
-    final = (folder / f"{k:03}-final.txt").read_text()
+    final = (folder / f"{k:03}-final.txt").read_text(encoding="utf-8")
     size = receipt.stat().st_size
     if size > INLINE:
         evidence = review_evidence(receipt)

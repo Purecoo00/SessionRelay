@@ -1,0 +1,48 @@
+name: Windows
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+          architecture: x64
+      - name: Test the relay with fake drivers
+        run: python test_relay.py
+        env:
+          PYTHONUTF8: '1'
+      - name: Install Windows frontend dependencies
+        run: |
+          python -m venv .venv
+          .venv\Scripts\python.exe -m pip install -r windows/requirements.txt
+      - name: Test frontend settings and stdio
+        run: .venv\Scripts\python.exe -m windows.test_app
+        env:
+          QT_QPA_PLATFORM: offscreen
+      - name: Build Windows executables
+        run: .venv\Scripts\python.exe -m PyInstaller --noconfirm windows/session-relay.spec
+      - name: Smoke test the packaged worker and frontend
+        run: |
+          $worker = '.\dist\Session Relay\relay-worker.exe'
+          $reply = '{"command":"history","folder":""}' | & $worker relay.py | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or $reply.kind -ne 'history') { throw 'Packaged worker failed' }
+          $env:QT_QPA_PLATFORM = 'offscreen'
+          $env:SESSION_RELAY_SNAPSHOT = Join-Path $pwd 'dist\windows-screenshots'
+          $gui = Start-Process -FilePath '.\dist\Session Relay\Session Relay.exe' -ArgumentList '--demo', '--lang', 'en' -Wait -PassThru
+          $count = (Get-ChildItem $env:SESSION_RELAY_SNAPSHOT -Filter '*.png').Count
+          if ($gui.ExitCode -ne 0 -or $count -ne 10) { throw 'Packaged demo failed' }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Session-Relay-Windows-x64
+          path: dist/Session Relay/
+          if-no-files-found: error

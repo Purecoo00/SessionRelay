@@ -1,8 +1,10 @@
 """Protocol-level tests using disposable projects and local CLI doubles."""
+import base64
 import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -12,19 +14,22 @@ import uuid
 from pathlib import Path
 from unittest.mock import patch
 
-from agents import Claude, Codex, codex_threads, desktop_notes, project_sessions, resolve_claude_id
+from agents import Claude, Codex, cli_command, codex_threads, desktop_notes, project_sessions, resolve_claude_id
 import i18n
-from relay import (DIGEST, conversation, parse_decision, register_mcp, review_evidence, run_loop, task_document,
+from relay import (DIGEST, bootstrap, conversation, parse_decision, register_mcp, review_evidence, run_loop, session_locks, task_document,
                    workspace)
 from relay_mcp import FINISH, PREFIX, SEND, ReviewHandoff, respond
 import live
+import relay_platform
 
 HERE = Path(__file__).resolve().parent
 DOC = "task.md"
 
-DRIVER = '''#!/usr/bin/python3
+DRIVER = '''#!/usr/bin/env python3
 import json, os, pathlib, subprocess, sys
 root=pathlib.Path.cwd()
+for stream in (sys.stdin, sys.stdout, sys.stderr):
+    stream.reconfigure(encoding="utf-8")
 def out(obj):
     print(json.dumps(obj), flush=True)
 def reply(prompt):
@@ -79,7 +84,7 @@ else:
         plan=json.loads(text.split("<relay-decision>")[1].split("</relay-decision>")[0])
         name, args=("send_to_codex", {"prompt":plan["prompt"]}) if plan["action"]=="continue" else ("finish_review", {"status":"done", "reason":"done"})
         call={"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":name,"arguments":args}}
-        ack=subprocess.run([cfg["command"],*cfg["args"]],env=dict(os.environ,**cfg["env"]),input=json.dumps(call),text=True,capture_output=True,check=True)
+        ack=subprocess.run([cfg["command"],*cfg["args"]],env=dict(os.environ,**cfg["env"]),input=json.dumps(call),text=True,capture_output=True,check=True,encoding="utf-8")
         out({"type":"assistant","session_id":sid,"message":{"content":[{"type":"tool_use","id":"call1","name":"mcp__session_relay__"+name,"input":args}]}})
         out({"type":"user","session_id":sid,"message":{"content":[{"type":"tool_result","tool_use_id":"call1","content":json.loads(ack.stdout)["result"]["content"]}]}})
         text="仅给用户的审阅意见"
@@ -89,16 +94,22 @@ else:
 '''
 
 
+def fake_cli(root):
+    cli = root / ("fake-cli.py" if os.name == "nt" else "fake-cli")
+    cli.write_text(DRIVER, encoding="utf-8")
+    if os.name != "nt":
+        cli.chmod(0o700)
+    return cli
+
+
 class RelayTest(unittest.TestCase):
     def setUp(self):
         t = tempfile.TemporaryDirectory()
         self.addCleanup(t.cleanup)
         self.root = Path(t.name).resolve()
         self.doc = self.root / DOC
-        self.doc.write_text("# task")
-        cli = self.root / "fake-cli"
-        cli.write_text(DRIVER)
-        cli.chmod(0o700)
+        self.doc.write_text("# task", encoding="utf-8")
+        cli = fake_cli(self.root)
         self.patch = patch("agents.executable", return_value=str(cli))
         self.patch.start()
         self.addCleanup(self.patch.stop)
@@ -119,15 +130,15 @@ class RelayTest(unittest.TestCase):
             run_loop(config,pair,self.doc,self.agents,self.agents["codex"].latest,lambda:False,record)
         run()
         self.assertEqual(self.events[-1], "paused")
-        self.assertEqual((self.root/"executions").read_text(),"1")
+        self.assertEqual((self.root/"executions").read_text(encoding="utf-8"),"1")
         config["mode"] = "resume"
         run()
         self.assertEqual(self.events[-1], "done")
-        self.assertEqual((self.root/"executions").read_text(),"2")
-        folder = pair / (pair/"current").read_text()
-        self.assertIn("TOOL-OUTPUT",(folder/"001-receipt.txt").read_text())
-        self.assertNotIn("WRONG",(folder/"001-receipt.txt").read_text())
-        self.assertEqual(self.doc.read_text().count("review"),3)
+        self.assertEqual((self.root/"executions").read_text(encoding="utf-8"),"2")
+        folder = pair / (pair/"current").read_text(encoding="utf-8")
+        self.assertIn("TOOL-OUTPUT",(folder/"001-receipt.txt").read_text(encoding="utf-8"))
+        self.assertNotIn("WRONG",(folder/"001-receipt.txt").read_text(encoding="utf-8"))
+        self.assertEqual(self.doc.read_text(encoding="utf-8").count("review"),3)
         return pair, folder
 
     def test_claude_manager(self): self.run_case("claude")
@@ -149,7 +160,7 @@ class RelayTest(unittest.TestCase):
         self.assertTrue(any(f["role"] == "codex" and "RECEIPT-OK" in f["text"] for f in streamed))
         turns = {f["id"] for f in self.fields if f["kind"] == "turn"}
         self.assertEqual(turns, {m["id"] for m in chat})
-        latest = (pair.parent / DIGEST).read_text()
+        latest = (pair.parent / DIGEST).read_text(encoding="utf-8")
         self.assertIn(str(folder), latest)
         self.assertIn("接力完成，等待你确认", latest)
 
@@ -158,7 +169,7 @@ class RelayTest(unittest.TestCase):
         meta.mkdir(parents=True, exist_ok=True)
         (meta / "local_x.json").write_text(json.dumps(dict(
             cliSessionId=self.agents["claude"].sid, title="桌面审查", sessionId="local_x",
-            lastActivityAt=int((time.time() - seconds_ago) * 1000))))
+            lastActivityAt=int((time.time() - seconds_ago) * 1000))), encoding="utf-8")
 
     def test_recent_desktop_use_pauses_before_resuming_claude(self):
         pair = workspace(self.root, "a", "b", "claude")
@@ -173,10 +184,10 @@ class RelayTest(unittest.TestCase):
             review.assert_not_called()
         self.assertEqual(events[-1][0], "desktop")
         self.assertIn("桌面审查", events[-1][1])
-        state = json.loads((pair/(pair/"current").read_text()/"state.json").read_text())
+        state = json.loads((pair/(pair/"current").read_text(encoding="utf-8")/"state.json").read_text(encoding="utf-8"))
         self.assertEqual((state["phase"], state["inflight"]), ("review", False))
         def finish(prompt, manager, handoff):
-            self.doc.write_text("reviewed")
+            self.doc.write_text("reviewed", encoding="utf-8")
             self.submit(handoff, FINISH, dict(status="done", reason="ok"))
             return "ok", "ok"
         cfg.update(mode="resume")
@@ -193,7 +204,7 @@ class RelayTest(unittest.TestCase):
         self.desktop_meta(3600)
         pair = workspace(self.root, "a", "b", "claude")
         def finish(prompt, manager, handoff):
-            self.doc.write_text("reviewed")
+            self.doc.write_text("reviewed", encoding="utf-8")
             self.submit(handoff, FINISH, dict(status="done", reason="ok"))
             return "ok", "ok"
         with patch.object(self.agents["claude"], "run", side_effect=finish) as review:
@@ -216,14 +227,14 @@ class RelayTest(unittest.TestCase):
                 row("user", "claude-desktop", [dict(type="tool_result", tool_use_id="t", content="x")]),
                 row("assistant", "claude-desktop", [dict(type="text", text="好的，按第二种写。")]),
                 row("user", "claude-desktop", "提醒", isMeta=True)]
-        (bucket / f"{sid}.jsonl").write_text("\n".join(rows) + "\n")
+        (bucket / f"{sid}.jsonl").write_text("\n".join(rows) + "\n", encoding="utf-8")
         with patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": str(cfg_dir)}):
             self.assertEqual(desktop_notes(sid), [("措辞用第二种", "好的，按第二种写。")])
             pair = workspace(self.root, "a", "b", "claude")
             prompts = []
             def finish(prompt, manager, handoff):
                 prompts.append(prompt)
-                self.doc.write_text("reviewed")
+                self.doc.write_text("reviewed", encoding="utf-8")
                 self.submit(handoff, FINISH, dict(status="done", reason="ok"))
                 return "ok", "ok"
             with patch.object(self.agents["claude"], "run", side_effect=finish):
@@ -236,8 +247,8 @@ class RelayTest(unittest.TestCase):
         pair=workspace(self.root,"a","b","claude")
         run_loop(dict(manager="claude",mode="goal",goal="NO_WRITE",limit=1),
                  pair,self.doc,self.agents,lambda:"",lambda:False,lambda *a,**k:None)
-        folder = pair/(pair/"current").read_text()
-        self.assertEqual(json.loads((folder/"state.json").read_text())["phase"], "blocked")
+        folder = pair/(pair/"current").read_text(encoding="utf-8")
+        self.assertEqual(json.loads((folder/"state.json").read_text(encoding="utf-8"))["phase"], "blocked")
         self.assertFalse((self.root/"executions").exists())
 
     def test_unmarked_prose_is_reformatted_before_dispatch(self):
@@ -249,13 +260,13 @@ class RelayTest(unittest.TestCase):
         def review(request, manager):
             calls.append(request)
             if len(calls) == 1:
-                self.doc.write_text("updated")
+                self.doc.write_text("updated", encoding="utf-8")
                 answer = "结果通过。接下来把核对工作交给执行者。附注仅供审查。"
             elif len(calls) == 2:
                 decision = json.dumps(dict(action="continue", reason="已核对", prompt=prompt))
                 answer = "我的审查意见\n<relay-decision>" + decision + "</relay-decision>\n附注"
             else:
-                self.doc.write_text("finished")
+                self.doc.write_text("finished", encoding="utf-8")
                 answer = '<relay-decision>{"action":"done","reason":"完成","prompt":""}</relay-decision>'
             return answer, answer
 
@@ -270,13 +281,13 @@ class RelayTest(unittest.TestCase):
         cfg = self.root / "claude-config"
         bucket = cfg / "projects" / re.sub(r"[^A-Za-z0-9]", "-", str(self.root))
         bucket.mkdir(parents=True)
-        (bucket/(cli_id + ".jsonl")).write_text(json.dumps({"cwd":str(self.root)})+"\n")
+        (bucket/(cli_id + ".jsonl")).write_text(json.dumps({"cwd":str(self.root)})+"\n", encoding="utf-8")
         other = str(uuid.uuid4())
-        (bucket/(other + ".jsonl")).write_text(json.dumps({"cwd":"/another/project"})+"\n")
+        (bucket/(other + ".jsonl")).write_text(json.dumps({"cwd":"/another/project"})+"\n", encoding="utf-8")
         meta = self.root/"desktop"/"org"/"account"
         meta.mkdir(parents=True)
         (meta/(alias+".json")).write_text(json.dumps(dict(cwd=str(self.root), cliSessionId=cli_id,
-                                                         sessionId=alias, title="项目审查")))
+                                                         sessionId=alias, title="项目审查")), encoding="utf-8")
         with patch.dict("os.environ", {"CLAUDE_CONFIG_DIR":str(cfg)}):
             sessions = project_sessions(self.root, self.root/"desktop")
             self.assertEqual([(s["id"],s["title"]) for s in sessions], [(cli_id,"项目审查")])
@@ -300,15 +311,15 @@ class RelayTest(unittest.TestCase):
              patch.object(self.agents["claude"],"run") as review:
             run()
             review.assert_not_called()
-        folder = pair / (pair/"current").read_text()
-        state = json.loads((folder/"state.json").read_text())
+        folder = pair / (pair/"current").read_text(encoding="utf-8")
+        state = json.loads((folder/"state.json").read_text(encoding="utf-8"))
         self.assertEqual((state["phase"],state["sourceTurn"]),("await_codex","external"))
         paused.clear()
         cfg["mode"] = "resume"
 
         def finish(prompt, manager, handoff):
             self.assertIn("bound receipt",prompt)
-            self.doc.write_text("review complete")
+            self.doc.write_text("review complete", encoding="utf-8")
             self.submit(handoff, FINISH, dict(status="done", reason="ok"))
             return "完成", "完成"
 
@@ -324,7 +335,7 @@ class RelayTest(unittest.TestCase):
         codex = self.agents["codex"]
         codex.rollout = self.root / "events.jsonl"
         abort = json.dumps({"type":"event_msg","payload":{"type":"turn_aborted","turn_id":"target"}})
-        codex.rollout.write_text(abort[:-1])
+        codex.rollout.write_text(abort[:-1], encoding="utf-8")
         ambiguous = {"id":"target","status":"interrupted","completedAt":None}
         self.assertEqual(codex.turn_state(ambiguous),"pending")
         with codex.rollout.open("a") as f:
@@ -347,7 +358,7 @@ class RelayTest(unittest.TestCase):
             action = next(outcomes)
             if action == "done":
                 self.assertIn("正在恢复同一回合的审查", prompt)
-                self.doc.write_text("review saved")
+                self.doc.write_text("review saved", encoding="utf-8")
             self.submit(handoff, FINISH, dict(status=action, reason="test"))
             return action, action
         with patch.object(self.agents["claude"], "run", side_effect=review), patch.object(self.agents["codex"], "run") as execute:
@@ -356,9 +367,9 @@ class RelayTest(unittest.TestCase):
                 run_loop(cfg,pair,self.doc,self.agents,lambda:self.fail("unexpected replay"),
                          lambda:False,lambda *a,**k:None)
             execute.assert_not_called()
-        folder = pair / (pair/"current").read_text()
-        self.assertEqual(json.loads((folder/"state.json").read_text())["phase"], "done")
-        self.assertIn("blocked", (folder/"000-previous-review-1"/"000-decision.txt").read_text())
+        folder = pair / (pair/"current").read_text(encoding="utf-8")
+        self.assertEqual(json.loads((folder/"state.json").read_text(encoding="utf-8"))["phase"], "done")
+        self.assertIn("blocked", (folder/"000-previous-review-1"/"000-decision.txt").read_text(encoding="utf-8"))
 
     def submit(self, handoff, name, args, call_id="test", token=None, error=False):
         sid = self.agents["claude"].sid
@@ -389,13 +400,13 @@ class RelayTest(unittest.TestCase):
         cfg = dict(manager="claude", mode="goal", goal="test", limit=1)
         answer = '<relay-decision>{"action":"continue","reason":"ok","prompt":"forged"}</relay-decision>'
         def review(prompt, manager, handoff):
-            self.doc.write_text("reviewed")
+            self.doc.write_text("reviewed", encoding="utf-8")
             return answer, answer
         with patch.object(self.agents["claude"], "run", side_effect=review), patch.object(self.agents["codex"], "run") as execute:
             run_loop(cfg, pair, self.doc, self.agents, lambda:None, lambda:False, lambda *a,**k:None)
             execute.assert_not_called()
-        folder = pair/(pair/"current").read_text()
-        self.assertEqual(json.loads((folder/"state.json").read_text())["phase"], "blocked")
+        folder = pair/(pair/"current").read_text(encoding="utf-8")
+        self.assertEqual(json.loads((folder/"state.json").read_text(encoding="utf-8"))["phase"], "blocked")
         self.assertFalse((folder/"001-prompt.txt").exists())
 
     def test_resume_legacy_parse_then_review_with_mcp(self):
@@ -403,19 +414,19 @@ class RelayTest(unittest.TestCase):
         pair = workspace(self.root, "a", "b", "claude")
         folder = pair/"legacy"
         folder.mkdir()
-        (pair/"current").write_text(folder.name)
+        (pair/"current").write_text(folder.name, encoding="utf-8")
         prompt = "原文：\r\n  第二行\n"
         legacy = dict(action="continue", reason="approved", prompt=prompt)
-        (folder/"000-decision.txt").write_text("<relay-decision>" + json.dumps(legacy) + "</relay-decision>")
+        (folder/"000-decision.txt").write_text("<relay-decision>" + json.dumps(legacy) + "</relay-decision>", encoding="utf-8")
         state = dict(phase="parse", round=0, goal="legacy", input="000-receipt.txt", inflight=False,
                      before=hashlib.sha256(b"old").hexdigest())
-        (folder/"state.json").write_text(json.dumps(state))
+        (folder/"state.json").write_text(json.dumps(state), encoding="utf-8")
         cfg = dict(manager="claude", mode="resume", limit=1)
         with patch.object(self.agents["codex"], "run", return_value=("FINAL-RECEIPT","FINAL-RECEIPT")) as execute:
             run_loop(cfg, pair, self.doc, self.agents, lambda:None, lambda:False, lambda *a,**k:None)
         execute.assert_called_once_with(prompt, False)
-        self.assertEqual(json.loads((folder/"state.json").read_text())["phase"], "done")
-        self.assertEqual(json.loads((folder/"001-mcp.json").read_text())["decision"]["action"], "done")
+        self.assertEqual(json.loads((folder/"state.json").read_text(encoding="utf-8"))["phase"], "done")
+        self.assertEqual(json.loads((folder/"001-mcp.json").read_text(encoding="utf-8"))["decision"]["action"], "done")
 
     def test_explicit_resume_recovers_interrupted_mcp_review(self):
         pair = workspace(self.root, "a", "b", "claude")
@@ -427,19 +438,19 @@ class RelayTest(unittest.TestCase):
                 run()
         cfg["mode"] = "resume"
         def finish(prompt, manager, handoff):
-            self.doc.write_text("retry completed")
+            self.doc.write_text("retry completed", encoding="utf-8")
             self.submit(handoff, FINISH, dict(status="done", reason="user review"))
             return "请审阅", "请审阅"
         with patch.object(self.agents["claude"], "run", side_effect=finish), patch.object(self.agents["codex"], "run") as execute:
             run()
             execute.assert_not_called()
-        state = json.loads((pair/(pair/"current").read_text()/"state.json").read_text())
+        state = json.loads((pair/(pair/"current").read_text(encoding="utf-8")/"state.json").read_text(encoding="utf-8"))
         self.assertEqual((state["phase"], state["retry"]), ("done", 1))
 
     def test_large_receipt_pages_fit_tool_limits_and_keep_long_lines(self):
         path = self.root / "000-receipt.txt"
         content = ("数值" * 40000 + "\n") * 2 + "FINAL RESULT"
-        path.write_text(content)
+        path.write_text(content, encoding="utf-8")
         message = review_evidence(path)
         pages = sorted(path.with_suffix(".pages").glob("*.txt"))
         self.assertGreater(len(pages), 1)
@@ -447,8 +458,8 @@ class RelayTest(unittest.TestCase):
         self.assertIn(str(pages[-1]), message)
         self.assertIn("FINAL RESULT", message)
         self.assertTrue(all(p.stat().st_size <= 16384 for p in pages))
-        self.assertEqual(path.read_text(), content)
-        view = "".join(p.read_text() for p in pages)
+        self.assertEqual(path.read_text(encoding="utf-8"), content)
+        view = "".join(p.read_text(encoding="utf-8") for p in pages)
         self.assertLessEqual(max(map(len, view.splitlines())), 800)
         self.assertEqual(view.replace("\n",""),content.replace("\n",""))
 
@@ -468,13 +479,11 @@ class LiveRelayTest(unittest.TestCase):
     """The reviewer's own session dispatches through codex_relay and collects receipts."""
 
     def setUp(self):
-        t = tempfile.TemporaryDirectory()
+        t = tempfile.TemporaryDirectory(prefix="Session Relay O'Brien & 测试 ")
         self.addCleanup(t.cleanup)
         self.root = Path(t.name).resolve()
-        (self.root / DOC).write_text("# task")
-        cli = self.root / "fake-cli"
-        cli.write_text(DRIVER)
-        cli.chmod(0o700)
+        (self.root / DOC).write_text("# task", encoding="utf-8")
+        cli = fake_cli(self.root)
         env = patch.dict(os.environ, {"SESSION_RELAY_CODEX_BIN": str(cli),
                                       "SESSION_RELAY_SUPPORT": str(self.root / "support"),
                                       "CLAUDE_CONFIG_DIR": str(self.root / "claude-config")})
@@ -502,8 +511,17 @@ class LiveRelayTest(unittest.TestCase):
 
     def wait(self, text):
         command = text.strip().splitlines()[-2]
-        self.assertTrue(command.startswith(live.PYTHON))
-        return subprocess.run(shlex.split(command), capture_output=True, text=True, timeout=60)
+        if os.name == "nt":
+            self.assertTrue(command.startswith("MSYS2_ARG_CONV_EXCL="))
+            # Git for Windows on the Windows runner exercises the actual Bash command.
+            git = shutil.which("git")
+            exec_path = subprocess.check_output([git, "--exec-path"], encoding="utf-8").strip()
+            bash = Path(exec_path).parents[2] / "bin" / "bash.exe"
+            args = [str(bash), "-c", command]
+        else:
+            args = shlex.split(command)
+            self.assertEqual(args[0], sys.executable)
+        return subprocess.run(args, capture_output=True, encoding="utf-8", timeout=60)
 
     def test_dispatch_wait_and_receipt_round_trip(self):
         folder = live.bind(self.root, self.codex, limit=2, document=DOC)
@@ -529,7 +547,7 @@ class LiveRelayTest(unittest.TestCase):
         done = self.wait(text)
         self.assertIn("FINAL-RECEIPT", done.stdout)
         self.assertIn("还可派出 0 轮", done.stdout)
-        self.assertEqual((self.root / "executions").read_text(), "2")
+        self.assertEqual((self.root / "executions").read_text(encoding="utf-8"), "2")
 
         error, text = self.tool(call, SEND, prompt=prompt)
         self.assertTrue(error)
@@ -543,7 +561,7 @@ class LiveRelayTest(unittest.TestCase):
 
         error, text = self.tool(call, "start_new_run")
         self.assertFalse(error, text)
-        (live.base(self.root) / "pause").write_text("")
+        (live.base(self.root) / "pause").write_text("", encoding="utf-8")
         error, text = self.tool(call, SEND, prompt=prompt)
         self.assertTrue(error)
         self.assertIn("暂停", text)
@@ -564,7 +582,7 @@ class LiveRelayTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "没有绑定"):
             live.route(self.root, {"CLAUDE_CODE_SESSION_ID": str(uuid.uuid4())})
 
-        (live.base(self.root) / "pause").write_text("")  # Pausing the first pair leaves the second running.
+        (live.base(self.root) / "pause").write_text("", encoding="utf-8")  # Pausing the first pair leaves the second running.
         call = self.server(CLAUDE_CODE_SESSION_ID=second)
         error, text = self.tool(call, SEND, prompt="exact\n任务  $HOME")
         self.assertFalse(error, text)
@@ -585,7 +603,7 @@ class LiveRelayTest(unittest.TestCase):
         first = live.bind(self.root, self.codex, limit=3, check=False, document=DOC)
         again = live.bind(self.root, self.codex, limit=10, check=False, document=DOC)
         self.assertEqual(first, again)
-        self.assertEqual(json.loads((again / "state.json").read_text())["limit"], 10)
+        self.assertEqual(json.loads((again / "state.json").read_text(encoding="utf-8"))["limit"], 10)
         live.send(self.root, "x", spawn=lambda *a: None, settle=0)
         live.update_pending(again, status="completed", collected=True)
         third = live.bind(self.root, self.codex, limit=10, check=False, document=DOC)
@@ -602,17 +620,80 @@ class LiveRelayTest(unittest.TestCase):
             register_mcp(self.root, run=run)
             (remove, _), (add, kw) = calls
             self.assertEqual(remove, ["claude", "mcp", "remove", "-s", "local", "codex_relay"])
-            self.assertEqual(add, ["claude", "mcp", "add", "-s", "local", "codex_relay", "--", "/usr/bin/python3", "-B",
+            self.assertEqual(add, ["claude", "mcp", "add", "-s", "local", "codex_relay", "--", sys.executable, "-B",
                                    str(HERE / "relay_mcp.py"), "--live", "--project", str(self.root)])
             self.assertEqual(kw["cwd"], self.root)  # Local scope is keyed by the project folder.
             fail = True
             with self.assertRaisesRegex(RuntimeError, "boom"):
                 register_mcp(self.root, run=run)
 
+    def test_session_lock_contends_across_processes_and_releases(self):
+        command = [sys.executable, "-c",
+                   "from relay import session_locks; from contextlib import ExitStack; "
+                   "stack = ExitStack(); stack.enter_context(session_locks(['shared'])); stack.close()"]
+        with session_locks(["shared", "shared"]):
+            conflict = subprocess.run(command, cwd=HERE, capture_output=True, encoding="utf-8")
+            self.assertNotEqual(conflict.returncode, 0)
+            self.assertIn("Session Relay", conflict.stderr)
+        released = subprocess.run(command, cwd=HERE, capture_output=True, encoding="utf-8")
+        self.assertEqual(released.returncode, 0, released.stderr)
+
+    def test_git_bash_preserves_windows_paths_with_spaces_and_apostrophes(self):
+        python = r"C:\Program Files\Python\python.exe"
+        root = r"D:\Projects\O'Brien & Co"
+        script = r"C:\Relay UI\relay.py"
+        command = relay_platform.git_bash_command(
+            [python, "-B", script, "wait", "--project", root, "--pair", "p-fixture"], (0, 2, 5))
+        self.assertEqual(shlex.split(command),
+                         ["MSYS2_ARG_CONV_EXCL=*", "C:/Program Files/Python/python.exe", "-B",
+                          "C:/Relay UI/relay.py", "wait", "--project", "D:/Projects/O'Brien & Co",
+                          "--pair", "p-fixture"])
+
+    def test_windows_permission_path_uses_claude_posix_drive_syntax(self):
+        with patch("relay_platform.WINDOWS", True):
+            self.assertEqual(relay_platform.claude_rule_path(r"D:\Projects\任务 文档.md"),
+                             "//d/Projects/任务 文档.md")
+
+    def test_windows_bootstrap_opens_new_powershell_console(self):
+        doc = self.root / "O'Brien 任务.md"
+        doc.write_text("# task", encoding="utf-8")
+        with patch("relay.WINDOWS", True), patch("relay.executable", return_value=r"C:\Program Files\claude.exe"), \
+             patch("relay.subprocess.CREATE_NEW_CONSOLE", 16, create=True), \
+             patch("relay.subprocess.Popen") as launch, patch("relay.emit") as emit:
+            bootstrap(self.root, document=str(doc))
+        (command,), options = launch.call_args
+        self.assertEqual(command[:3], ["powershell.exe", "-NoProfile", "-EncodedCommand"])
+        script = base64.b64decode(command[3]).decode("utf-16-le")
+        self.assertIn(r"& 'C:\Program Files\claude.exe' auth status", script)
+        self.assertIn("--session-id", script)
+        self.assertIn("O''Brien 任务.md", script)
+        self.assertEqual(options["creationflags"], 16)
+        self.assertEqual(options["cwd"], self.root)
+        self.assertEqual(emit.call_args.args[0], "created")
+
+    def test_windows_cmd_npm_launchers_resolve_the_published_entry(self):
+        for agent, package, entry in (("claude", "@anthropic-ai/claude-code", "bin/claude.exe"),
+                                      ("codex", "@openai/codex", "bin/codex.js")):
+            shim = self.root / f"{agent}.cmd"
+            folder = self.root / "node_modules" / package
+            folder.mkdir(parents=True)
+            (folder / "package.json").write_text(json.dumps({"bin": {agent: entry}}), encoding="utf-8")
+            with patch("agents.WINDOWS", True), patch("agents.shutil.which", return_value="node.exe"):
+                result = cli_command(agent, str(shim))
+            expected = [str(folder / entry)]
+            if agent == "codex":
+                expected.insert(0, "node.exe")
+            self.assertEqual(result, expected)
+
+    def test_frozen_script_command_targets_worker(self):
+        with patch.object(sys, "frozen", True, create=True):
+            self.assertEqual(relay_platform.script_command(HERE / "relay_mcp.py", "--live"),
+                             [sys.executable, "relay_mcp.py", "--live"])
+
     def test_task_document_can_live_anywhere(self):
         notes = self.root / "notes"
         notes.mkdir()
-        (notes / "plan.md").write_text("# plan")
+        (notes / "plan.md").write_text("# plan", encoding="utf-8")
         self.assertEqual(task_document(self.root, "notes/plan.md"), notes / "plan.md")
         self.assertEqual(task_document(self.root, str(notes / "plan.md")), notes / "plan.md")
         for value in ("", "missing.md"):
@@ -644,7 +725,7 @@ class LiveRelayTest(unittest.TestCase):
 
     def test_wait_notices_a_worker_that_died(self):
         live.bind(self.root, self.codex, check=False, document=DOC)
-        dead = subprocess.Popen(["/usr/bin/true"])
+        dead = subprocess.Popen([sys.executable, "-c", "pass"])
         dead.wait()
         live.send(self.root, "x", spawn=lambda *a: dead.pid, settle=0)
         with self.assertRaisesRegex(RuntimeError, "意外退出"):

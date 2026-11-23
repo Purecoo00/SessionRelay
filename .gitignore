@@ -1,9 +1,12 @@
 # Python caches
 __pycache__/
 *.pyc
+.venv/
 
 # Build output
 *.app
+/build/
+/dist/
 icon/*.iconset/
 
 # macOS

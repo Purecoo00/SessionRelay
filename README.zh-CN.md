@@ -10,7 +10,7 @@
 
 <p align="center"><a href="README.md">English</a> · <b>中文</b></p>
 
-Session Relay 是一个 macOS 小工具，帮你把 **Claude Code** 会话和 **Codex** 会话之间的工作闭环跑起来。Claude 审查进展并写出下一条指令，Codex 执行，回执再交回 Claude 审查。你不用再在两个窗口之间手动复制 prompt 和输出。
+Session Relay 是一个支持 macOS 和 Windows 的桌面工具，帮你把 **Claude Code** 会话和 **Codex** 会话之间的工作闭环跑起来。Claude 审查进展并写出下一条指令，Codex 执行，回执再交回 Claude 审查。你不用再在两个窗口之间手动复制 prompt 和输出。
 
 > **非官方项目。** Session Relay 是独立的社区项目，与 Anthropic 和 OpenAI 没有任何关联，也未获得它们的认可或支持。Claude 和 Claude Code 是 Anthropic 的商标，Codex 是 OpenAI 的商标。
 
@@ -26,7 +26,7 @@ Session Relay 是一个 macOS 小工具，帮你把 **Claude Code** 会话和 **
 - **多组配对并行。** 每个项目、每条工作线都可以有自己的配对，同一个项目里也可以有好几组。每组配对有各自的 Codex 会话、审查会话、任务文档和记录。
 - **默认就有保护。** 有轮数上限和暂停开关，而且上一份回执收取之前不会派出下一条指令。
 - **全程有记录。** 每一轮的指令、完整回执、审查和结论都保存在你的项目里。
-- **原生 Mac App。** SwiftUI 编写，支持浅色和深色模式，中英文界面。
+- **桌面应用。** macOS 使用 SwiftUI，Windows 使用 PySide6，均支持浅色和深色模式及中英文界面。
 
 ## 工作方式
 
@@ -49,14 +49,14 @@ Session Relay 是一个 macOS 小工具，帮你把 **Claude Code** 会话和 **
 | 在哪里看审查 | 就在你平时用的那个桌面对话里 | App 的「对话」页 |
 | 怎么派单 | Claude 调用 MCP 工具 `send_to_codex` | 每轮审查后由 App 投递 |
 
-## 环境要求
+## macOS 环境要求
 
 - macOS 14 或更新版本，装好 Apple 命令行开发工具（`xcode-select --install`）
 - `/usr/bin/python3`，随命令行工具一起提供
 - [Claude Code](https://claude.com/claude-code)，已在本机登录
 - Codex 桌面版或 CLI，并且已经有这个项目的会话
 
-## 构建
+## 在 macOS 构建
 
 ```sh
 cd /path/to/SessionRelay
@@ -65,6 +65,24 @@ cd /path/to/SessionRelay
 ```
 
 构建产物只做了本机临时签名，没有经过公证。从别处下载的副本会被 Gatekeeper 拦下，所以请从源码构建。
+
+## Windows 安装与运行
+
+安装并登录 [Claude Code](https://code.claude.com/docs/zh-CN/setup) 和 Codex。应用从 Windows 的 `PATH` 查找 `claude` 和 `codex`。安装 Git for Windows，以便原会话接力通过 Claude Code 的 Bash 工具运行等待命令。要在桌面对话里审查，请使用 Claude Desktop。
+
+从成功的 Windows Actions 运行下载 `Session-Relay-Windows-x64`，把完整目录解压到固定位置并打开 `Session Relay.exe`。包内自带 Python worker。从源码运行或自行打包时，在仓库目录用 PowerShell 执行：
+
+```powershell
+py -3.13 -m venv .venv
+.venv\Scripts\python.exe -m pip install -r windows/requirements.txt
+.venv\Scripts\python.exe -m windows.app
+.venv\Scripts\python.exe -m PyInstaller --noconfirm windows/session-relay.spec
+& '.\dist\Session Relay\Session Relay.exe'
+```
+
+Windows 的应用设置和会话锁在 `%APPDATA%\Session Relay`。Claude Code 使用 `%USERPROFILE%\.claude` 或 `CLAUDE_CONFIG_DIR`。Claude Desktop 元数据从 `%APPDATA%\Claude` 或 Claude MSIX 包重定向后的 Roaming 目录读取。若安装使用其他数据目录，启动前设置 `SESSION_RELAY_CLAUDE_DESKTOP_DIR`。
+
+在 macOS 上预览 Windows 界面时，创建 `.venv` 并安装 `windows/requirements.txt`，然后用 `.venv/bin/python -m windows.app --demo --lang zh` 启动，英文用 `--lang en`。加上 `--snapshot dist/windows-screenshots` 即可导出两种主题的设置、对话、运行记录、实时审查和提示横幅。
 
 ## 快速开始：原会话接力
 
@@ -123,7 +141,7 @@ Session Relay 用到的几项接口都没有为这种用途提供稳定版本，
 - Claude Code 的本地会话记录和 Claude 桌面版的会话元数据，用来列出会话、把桌面对话带进审查、检测桌面活动；
 - Claude Code 的 `stream-json` 输出和 `claude mcp add`。
 
-目前只支持 macOS。同一个 Codex 会话或 Claude Code 会话同时只能参与一个正在运行的接力。已在 macOS 27、2026 年末的 Codex 和 Claude Code 版本上测试过。
+同一个 Codex 会话或 Claude Code 会话同时只能参与一个正在运行的接力。已在 macOS 27、2026 年末的 Codex 和 Claude Code 版本上测试过。
 
 ## 开发
 
