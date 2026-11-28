@@ -31,6 +31,19 @@ def replace_record(source, destination):
     os.replace(source, destination)
 
 
+def read_record(path):
+    """Read a record another process may be replacing. On Windows a file mid-replace briefly denies access."""
+    if WINDOWS:
+        for _ in range(40):
+            try:
+                return Path(path).read_text(encoding="utf-8")
+            except PermissionError as exc:
+                if exc.winerror not in (5, 32):
+                    raise
+                sleep(0.025)
+    return Path(path).read_text(encoding="utf-8")
+
+
 def script_command(script, *args):
     """A frozen console worker dispatches the same scripts by filename."""
     if getattr(sys, "frozen", False):

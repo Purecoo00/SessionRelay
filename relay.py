@@ -22,7 +22,7 @@ from agents import (Claude, Codex, claude_auth, claude_env, codex_threads, codex
 from i18n import t
 from relay_mcp import FINISH, PREFIX, SEND, ReviewHandoff
 
-from relay_platform import WINDOWS, relay_support, replace_record, script_command
+from relay_platform import WINDOWS, read_record, relay_support, replace_record, script_command
 
 if WINDOWS:
     import errno
@@ -153,7 +153,7 @@ def conversation(folder):
     executor = "codex" if manager == "claude" else "claude"
     names = {"claude": "Claude", "codex": "Codex"}
     try:
-        state = json.loads((folder / "state.json").read_text(encoding="utf-8"))
+        state = json.loads(read_record(folder / "state.json"))
     except (OSError, ValueError):
         return []
     found = [int(m.group(1)) for f in folder.iterdir() if (m := re.match(r"(\d{3})-", f.name))]
@@ -355,8 +355,8 @@ def run_loop(config, pair, doc, agents, latest, pause, publish=emit):
         if not pointer.exists():
             raise ValueError(t("这对会话还没有保存的交接点。请选择「最新执行回执」或「从目标开始」。",
                                "These sessions have no saved checkpoint. Choose \"Latest receipt\" or \"Start from goal\"."))
-        folder = pair / pointer.read_text(encoding="utf-8")
-        state = json.loads((folder / "state.json").read_text(encoding="utf-8"))
+        folder = pair / read_record(pointer)
+        state = json.loads(read_record(folder / "state.json"))
         if state["phase"] == "done":
             raise ValueError(t("上一次 App 驱动的接力已经结束，无法「继续上次」。"
                                "要让原审查会话派单，请切到「原会话接力」；要用 App 驱动，请选「最新执行回执」或「从目标开始」。",
