@@ -105,7 +105,7 @@ All pairs in a project share one `codex_relay` registration. Claude Code tells t
 
 - No new dispatch until the previous receipt has been collected.
 - **Pause Dispatch** in the app stops further dispatches. A running Codex turn still finishes.
-- The round limit makes Claude stop and ask you. It calls `start_new_run` only after you agree.
+- The round limit makes Claude stop and ask you. It calls `start_new_run` only after you agree. Choose **No limit** to let Claude plan freely; the relay then stops only when the work is done, needs you, or you pause dispatch.
 - Each dispatch can require your approval in the desktop window, or you can allow it to run fully automatically.
 - `relay_status` shows the bound chat, the task document, the rounds used and any receipt still waiting.
 

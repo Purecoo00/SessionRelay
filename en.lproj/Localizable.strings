@@ -77,6 +77,10 @@
 "推荐。审查会话在 Claude 桌面窗口里调用 send_to_codex 派单，并在后台收取回执，全程都在同一个对话里。" = "Recommended. The reviewer session dispatches with send_to_codex from the Claude desktop window and collects receipts in the background, all in one conversation.";
 "由本 App 通过命令行续接 Claude 会话完成审查。审查轮次不会显示在桌面窗口里，可在「对话」页查看。" = "This app resumes the Claude session from the command line to review. Those rounds do not appear in the desktop window; see them under Conversation.";
 "单次接力上限：%lld 轮" = "Round limit: %lld";
+"轮数上限" = "Round limit";
+"设上限" = "Limited";
+"不设上限" = "No limit";
+"不设上限时，接力只会在任务完成、需要你确认或你暂停派单时停下。" = "With no limit, the relay stops only when the work is done, needs you, or you pause dispatch.";
 "状态" = "Status";
 "派单已暂停" = "Dispatch paused";
 "已启用，等待审查会话派单" = "On, waiting for the reviewer to dispatch";

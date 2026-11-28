@@ -347,8 +347,8 @@ def run_loop(config, pair, doc, agents, latest, pause, publish=emit):
     executor = "codex" if manager == "claude" else "claude"
     forced_at = time.time() if config.get("force") else 0
     limit = int(config["limit"])
-    if not 1 <= limit <= 100:
-        raise ValueError(t("每次运行可执行 1 至 100 轮。", "A run can have 1 to 100 rounds."))
+    if not 0 <= limit <= 100:
+        raise ValueError(t("每次运行可执行 1 至 100 轮，0 表示不设上限。", "A run can have 1 to 100 rounds; 0 means no limit."))
     pointer = pair / "current"
     mode = config["mode"]
     if mode == "resume":
@@ -460,7 +460,7 @@ def run_loop(config, pair, doc, agents, latest, pause, publish=emit):
                            "\"Latest receipt\" or \"Start from goal\"."))
     count = 0
     while True:
-        if pause() or (state["phase"] == "execute" and count >= limit):
+        if pause() or (state["phase"] == "execute" and limit and count >= limit):
             log(t("交接点已保存。选择「继续上次」可从此处接着运行。", "Checkpoint saved. Choose \"Resume\" to continue from here."))
             publish("paused", t("已暂停", "Paused"), round=state["round"])
             return
@@ -676,14 +676,15 @@ def main():
         return bootstrap(config["project"], config["command"] == "login", config.get("document"))
     if config.get("command") == "bind":
         from live import bind
-        limit = config.get("limit", 3)
+        limit = int(config.get("limit", 3))
+        rounds = t(f"本次最多派出 {limit} 轮", f"with up to {limit} rounds") if limit else t("不设轮数上限", "with no round limit")
         folder = bind(config["project"], config["codex"], limit, document=config.get("document"),
                       pair=config.get("pair", ""), claude=config.get("claude", ""))
         register_mcp(project_root(config["project"]))
         emit("folder", str(folder))
-        emit("bound", t(f"已启用原会话接力，本次最多派出 {limit} 轮，并已在本机为这个项目注册 codex_relay。"
+        emit("bound", t(f"已启用原会话接力，{rounds}，并已在本机为这个项目注册 codex_relay。"
                         "在审查会话里开一轮新对话加载工具，再让 Claude 用 send_to_codex 派单。",
-                        f"In-session relay is on with up to {limit} rounds, and codex_relay is registered for this project "
+                        f"In-session relay is on {rounds}, and codex_relay is registered for this project "
                         + ("on this PC. " if WINDOWS else "on this Mac. ")
                         + "Start a new conversation in the reviewer session to load the tools, then have Claude "
                           "dispatch with send_to_codex."))

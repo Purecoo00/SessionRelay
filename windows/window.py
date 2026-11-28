@@ -707,7 +707,10 @@ class Window(QMainWindow):
 
         limit = RoundLimit(self.colors)
         limit.setRange(1, 100)
-        limit.setValue(pair.limit)
+        limit.setValue(pair.limit or 10)
+        # 0 rounds means no limit: the relay stops only when the work is done, needs the user, or is paused.
+        limit_rows = [("轮数上限", self.limit_picker())] + ([(None, None)] if pair.limit else [])
+        unlimited = self.L("不设上限时，接力只会在任务完成、需要你确认或你暂停派单时停下。") + "\n" if not pair.limit else ""
         limit.setAccessibleName(self.L("单次接力上限：%lld 轮" if live else "单次执行上限：%lld 轮", pair.limit))
         self.limit_text = self.L("单次接力上限：%lld 轮" if live else "单次执行上限：%lld 轮", "LIMIT")
         self.limit_label = label(self.limit_text.replace("LIMIT", str(pair.limit)))
@@ -717,16 +720,16 @@ class Window(QMainWindow):
             self.live_status = label()
             self.live_status_icon = label()
             self.render_live_status()
-            self.section("原会话接力", [(self.limit_label, self.controls(limit)),
+            self.section("原会话接力", [*self.limit_rows(limit_rows, limit),
                                        ("状态", self.controls(self.live_status_icon, self.live_status))],
-                         self.L("这个项目里还有其他配对。codex_relay 按调用它的 Claude Code 会话找到对应的配对，所以每个配对都要选定自己的 Claude Code 会话。"
+                         unlimited + self.L("这个项目里还有其他配对。codex_relay 按调用它的 Claude Code 会话找到对应的配对，所以每个配对都要选定自己的 Claude Code 会话。"
                                 if self.store.siblings(pair) else
                                 "启用时会在本机为这个项目注册 codex_relay 工具，不需要 .mcp.json。注册后在审查会话里开一轮新对话，工具就会出现。"))
         else:
             rows = [
                 ("指挥者", self.segments("manager", (("claude", "Claude"), ("codex", "Codex")))),
                 ("执行者", self.controls(label(self.L("Codex · MCP 派单") if pair.manager == "claude" else "Claude Code"))),
-                (self.limit_label, self.controls(limit)),
+                *self.limit_rows(limit_rows, limit),
                 ("本次起点", self.segments("mode", (("latest", "最新执行回执"), ("goal", "从目标开始"), ("resume", "继续上次")))),
             ]
             if pair.mode != "resume":
@@ -737,9 +740,29 @@ class Window(QMainWindow):
                 goal.setPlainText(pair.goal)
                 goal.textChanged.connect(lambda: self.edit("goal", goal.toPlainText()))
                 rows.append(("目标" if pair.mode == "goal" else "补充说明", goal))
-            self.section("App 驱动", rows)
+            self.section("App 驱动", rows, unlimited.strip())
         host.setEnabled(not self.run.busy)
         area.verticalScrollBar().setValue(pos)
+
+    def limit_rows(self, rows, limit):
+        return [(self.limit_label, self.controls(limit)) if key is None else (key, control) for key, control in rows]
+
+    def limit_picker(self):
+        widget = QFrame()
+        widget.setObjectName("segments")
+        row = layout(widget, "h", (2, 2, 2, 2))
+        group = QButtonGroup(widget)
+        for value, title in ((10, "设上限"), (0, "不设上限")):
+            control = button(self.L(title), lambda _=False, v=value: self.set_unlimited(v))
+            control.setCheckable(True)
+            control.setChecked((self.pair.limit == 0) == (value == 0))
+            group.addButton(control)
+            row.addWidget(control)
+        return widget
+
+    def set_unlimited(self, value):
+        if (self.pair.limit == 0) != (value == 0):
+            self.edit("limit", value, rebuild=True)
 
     def change_limit(self, value):
         self.limit_label.setText(self.limit_text.replace("LIMIT", str(value)))

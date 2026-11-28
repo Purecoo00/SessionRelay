@@ -487,7 +487,10 @@ struct PairPage: View {
 
             if p.relayMode == "live" {
                 Section {
-                    Stepper("单次接力上限：\(p.limit) 轮", value: $p.limit, in: 1...100)
+                    limitPicker
+                    if p.limit > 0 {
+                        Stepper("单次接力上限：\(p.limit) 轮", value: $p.limit, in: 1...100)
+                    }
                     LabeledContent("状态") {
                         if run.liveEnabled {
                             Label(run.livePaused ? L("派单已暂停") : L("已启用，等待审查会话派单"),
@@ -500,9 +503,9 @@ struct PairPage: View {
                 } header: {
                     Text("原会话接力")
                 } footer: {
-                    Text(siblings > 0
+                    Text(unlimitedNote + (siblings > 0
                          ? L("这个项目里还有其他配对。codex_relay 按调用它的 Claude Code 会话找到对应的配对，所以每个配对都要选定自己的 Claude Code 会话。")
-                         : L("启用时会在本机为这个项目注册 codex_relay 工具，不需要 .mcp.json。注册后在审查会话里开一轮新对话，工具就会出现。"))
+                         : L("启用时会在本机为这个项目注册 codex_relay 工具，不需要 .mcp.json。注册后在审查会话里开一轮新对话，工具就会出现。")))
                         .font(.caption).foregroundStyle(.secondary)
                 }
             } else {
@@ -513,7 +516,10 @@ struct PairPage: View {
                     }
                     .pickerStyle(.segmented)
                     LabeledContent("执行者", value: p.manager == "claude" ? L("Codex · MCP 派单") : "Claude Code")
-                    Stepper("单次执行上限：\(p.limit) 轮", value: $p.limit, in: 1...100)
+                    limitPicker
+                    if p.limit > 0 {
+                        Stepper("单次执行上限：\(p.limit) 轮", value: $p.limit, in: 1...100)
+                    }
                     Picker("本次起点", selection: $p.mode) {
                         Text("最新执行回执").tag("latest")
                         Text("从目标开始").tag("goal")
@@ -527,11 +533,29 @@ struct PairPage: View {
                     }
                 } header: {
                     Text("App 驱动")
+                } footer: {
+                    if p.limit == 0 {
+                        Text(unlimitedNote.trimmingCharacters(in: .whitespacesAndNewlines))
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
                 }
             }
         }
         .formStyle(.grouped)
         .disabled(run.busy)
+    }
+
+    /// 0 rounds means no limit: the relay stops only when the work is done, needs the user, or is paused.
+    var limitPicker: some View {
+        Picker("轮数上限", selection: Binding(get: { p.limit == 0 }, set: { p.limit = $0 ? 0 : 10 })) {
+            Text("设上限").tag(false)
+            Text("不设上限").tag(true)
+        }
+        .pickerStyle(.segmented)
+    }
+
+    var unlimitedNote: String {
+        p.limit == 0 ? L("不设上限时，接力只会在任务完成、需要你确认或你暂停派单时停下。") + "\n" : ""
     }
 
     // MARK: Chat

@@ -610,6 +610,18 @@ class LiveRelayTest(unittest.TestCase):
         self.assertTrue(event["claudeError"])
         self.assertEqual([chat["id"] for chat in event["codex"]], ["a", "b"])
 
+    def test_no_round_limit(self):
+        folder = live.bind(self.root, self.codex, limit=0, check=False, document=DOC)
+        state = json.loads((folder / "state.json").read_text(encoding="utf-8"))
+        self.assertEqual(state["limit"], 0)
+        state["round"] = 150
+        (folder / "state.json").write_text(json.dumps(state), encoding="utf-8")
+        text = live.send(self.root, "go", spawn=lambda root, folder, k: 0, settle=0)
+        self.assertIn("第 151 轮指令", text)
+        self.assertIn("已派出 151 轮（不设上限）", live.status(self.root))
+        with self.assertRaises(ValueError):
+            live.bind(self.root, self.codex, limit=-1, check=False, document=DOC)
+
     def test_rebinding_reuses_an_unused_run(self):
         first = live.bind(self.root, self.codex, limit=3, check=False, document=DOC)
         again = live.bind(self.root, self.codex, limit=10, check=False, document=DOC)
